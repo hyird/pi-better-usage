@@ -41,10 +41,10 @@ pi install F:/Workspace/windows/pi-better-usage
 ```text
 OpenAI Codex usage
 5h rolling: [███████████████░░░░░] 75% left · 25% used
-  Resets: 09-22 23:33 · in 2h3m
+  Resets: 9/22 23:33 · in 2h3m
 week: [████████████░░░░░░░░] 60% left · 40% used
-  Resets: 09-27 21:30 · in 5d0h
-Captured: 09-22 21:30
+  Resets: 9/27 21:30 · in 5d0h
+Captured: 9/22 21:30
 ```
 
 进度条样式参考 [pi-usage](https://github.com/TianZuo555/pi-extensions/tree/main/packages/pi-usage)，仅借鉴展示方式。
@@ -52,10 +52,10 @@ Captured: 09-22 21:30
 默认在编辑器下方显示当前 provider 的用量，每 60 秒刷新；其他服务只在命令查询时访问。
 
 ```text
-Usage: 5h 75% left · wk 60% left · ↺ 2h3m - 09-22 14:03 · work
+Usage: 5h 75% left · wk 60% left · ↺ 2h3m - 9/22 14:03 · work
 ```
 
-以上为示例数据。三家服务的重置时间和查询时间统一使用本地时区的 `MM-DD HH:mm`（24 小时制）。仅多账号登录时显示真实账号标签，不显示 `pi`、`auth.json` 等凭据来源。剩余 ≤30% 为黄色，≤10% 为红色。重置倒计时对应最接近额度上限的窗口。
+以上为示例数据。三家服务的重置时间和查询时间统一使用本地时区的 `M/D HH:mm`（24 小时制）。仅多账号登录时显示真实账号标签，不显示 `pi`、`auth.json` 等凭据来源。剩余 ≤30% 为黄色，≤10% 为红色。重置倒计时对应最接近额度上限的窗口。
 未知窗口不会显示为 100% 剩余；请求失败会清除页脚，用命令查看错误。
 
 ## 认证与多账号
@@ -111,6 +111,6 @@ bun run check
 ```
 
 测试包含响应解析、请求认证、账号隔离、失效处理、模型切换、延迟响应以及三家集成。
-HTTP 测试使用固定样例，不代表真实账号已联网验证。测试固定 UTC；实际显示使用本地时区，格式固定为 `MM-DD HH:mm`。
+HTTP 测试使用固定样例，不代表真实账号已联网验证。测试固定 UTC；实际显示使用本地时区，格式固定为 `M/D HH:mm`。
 
 MIT，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
