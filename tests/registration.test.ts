@@ -170,7 +170,7 @@ describe("widget placement", () => {
 
     expect(renderWidget(harness.lastWidget())).toBe(
       "{dim|Usage: }{dim|5h }{success|97%}{dim| left}{dim| · }{dim|wk }{success|99%}{dim| left}" +
-        "{dim| · }{dim|mo }{success|99%}{dim| left}{dim| · ↺ 2h3m - 2026-09-22 14:03}",
+        "{dim| · }{dim|mo }{success|99%}{dim| left}{dim| · ↺ 2h3m - 09-22 14:03}",
     );
     expect(renderWidget(harness.lastWidget(), 20)).toMatch(/\{dim\|\.\.\./);
   });
@@ -196,7 +196,7 @@ describe("widget placement", () => {
     await settle(harness);
 
     expect(harness.lastStatus()).toBe(
-      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2026-09-22 14:03",
+      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 09-22 14:03",
     );
   });
 });
@@ -358,7 +358,7 @@ describe("footer modes", () => {
 
     expect(harness.widgets.at(-1)?.content).toBeUndefined();
     expect(harness.lastStatus()).toBe(
-      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2026-09-22 14:03",
+      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 09-22 14:03",
     );
   });
 

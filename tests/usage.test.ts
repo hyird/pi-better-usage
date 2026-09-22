@@ -234,11 +234,11 @@ describe("formatCountdown", () => {
 
 describe("formatClock", () => {
   it("uses a numeric date and 24-hour clock on the current day", () => {
-    expect(formatClock(NOW + 3 * 60_000, NOW)).toBe("2026-09-22 12:03");
+    expect(formatClock(NOW + 3 * 60_000, NOW)).toBe("09-22 12:03");
   });
 
   it("uses the same date and clock format on another day", () => {
-    expect(formatClock(NOW + 20 * 86_400_000, NOW)).toBe("2026-10-12 12:00");
+    expect(formatClock(NOW + 20 * 86_400_000, NOW)).toBe("10-12 12:00");
   });
 });
 
@@ -280,14 +280,14 @@ describe("usageSegments", () => {
       { text: "mo ", severity: "muted" },
       { text: "5%", severity: "critical" },
       { text: " left", severity: "muted" },
-      { text: " · ↺ 20d0h - 2026-10-12 12:00", severity: "muted" },
+      { text: " · ↺ 20d0h - 10-12 12:00", severity: "muted" },
       { text: " · zhong", severity: "muted" },
     ]);
   });
 
   it("flattens to the agreed line", () => {
     expect(segments.map((segment) => segment.text).join("")).toBe(
-      "Usage: 5h 97% left · wk 88% left · mo 5% left · ↺ 20d0h - 2026-10-12 12:00 · zhong",
+      "Usage: 5h 97% left · wk 88% left · mo 5% left · ↺ 20d0h - 10-12 12:00 · zhong",
     );
   });
 
@@ -319,7 +319,7 @@ describe("usageSegments", () => {
 
   it("can hide the account label", () => {
     expect(formatStatusLine(FULL, config({ showAccountLabel: false }), "zhong", NOW)).toBe(
-      "Usage: 5h 97% left · wk 88% left · mo 5% left · ↺ 20d0h - 2026-10-12 12:00",
+      "Usage: 5h 97% left · wk 88% left · mo 5% left · ↺ 20d0h - 10-12 12:00",
     );
   });
 
@@ -357,10 +357,10 @@ describe("formatDetail", () => {
     const detail = formatDetail(FULL, config(), CREDENTIAL, NOW);
     expect(detail).toContain("account: zhong");
     expect(detail).toContain(
-      "5h rolling: [███████████████████░] 97% left · 3% used\n  Resets: 2026-09-22 14:03 · in 2h3m",
+      "5h rolling: [███████████████████░] 97% left · 3% used\n  Resets: 09-22 14:03 · in 2h3m",
     );
     expect(detail).toContain(
-      "month: [█░░░░░░░░░░░░░░░░░░░] 5% left · 95% used\n  Resets: 2026-10-12 12:00 · in 20d0h",
+      "month: [█░░░░░░░░░░░░░░░░░░░] 5% left · 95% used\n  Resets: 10-12 12:00 · in 20d0h",
     );
   });
 

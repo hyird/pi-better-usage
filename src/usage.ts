@@ -168,7 +168,7 @@ export function formatCountdown(msRemaining: number): string {
 export function formatClock(instant: number, _now = Date.now()): string {
   const date = new Date(instant);
   const pad = (value: number): string => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /** Credential source names are internal metadata, not account labels. */
@@ -218,7 +218,7 @@ export function severityForLeftPercent(percent: number): UsageSeverity {
 
 /**
  * Coloured segments behind the widget, e.g.
- * `Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2026-09-22 17:34 · zhong`.
+ * `Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 09-22 17:34 · zhong`.
  * Percentages are what is left of each window; the reset clock comes from the
  * window closest to its limit.
  */
