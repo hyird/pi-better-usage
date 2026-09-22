@@ -1,26 +1,30 @@
 {
-  "name": "pi-better-opencode-go",
+  "name": "pi-better-usage",
   "version": "0.1.0",
-  "description": "OpenCode Go subscription usage for pi, styled after pi-better-grok: a coloured footer widget, footer modes, and pi-multiprovider (/multilogin) aware credentials.",
+  "description": "OpenAI Codex, Grok and OpenCode Go subscription usage for pi: remaining quota, reset times and account-aware footer.",
   "keywords": [
+    "codex",
     "footer",
+    "grok",
+    "openai",
     "opencode",
     "opencode-go",
     "pi",
     "pi-extension",
     "pi-package",
     "usage",
-    "widget"
+    "widget",
+    "xai"
   ],
-  "homepage": "https://github.com/hyird/pi-better-opencode-go#readme",
+  "homepage": "https://github.com/hyird/pi-better-usage#readme",
   "bugs": {
-    "url": "https://github.com/hyird/pi-better-opencode-go/issues"
+    "url": "https://github.com/hyird/pi-better-usage/issues"
   },
   "license": "MIT",
   "author": "hyird",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyird/pi-better-opencode-go.git"
+    "url": "git+https://github.com/hyird/pi-better-usage.git"
   },
   "files": [
     "index.ts",

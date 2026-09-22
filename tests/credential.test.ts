@@ -90,9 +90,6 @@ describe("resolveUsageCredential", () => {
     for (const resolveActiveAccountAuth of [
       async () => undefined,
       async () => ({ accessToken: "   ", label: "" }),
-      async () => {
-        throw new Error("pool exploded");
-      },
     ]) {
       const credential = await resolveUsageCredential(
         ctxWithRegistry({ getProviderAuth: async () => ({ auth: { apiKey: "registry-key" } }) }),
@@ -100,6 +97,22 @@ describe("resolveUsageCredential", () => {
       );
       expect(credential).toMatchObject({ apiKey: "registry-key", source: "pi" });
     }
+  });
+
+  it("does not borrow Pi's account when pooled authentication fails", async () => {
+    const credential = await resolveUsageCredential(
+      ctxWithRegistry({ getProviderAuth: async () => ({ auth: { apiKey: "wrong-account" } }) }),
+      {
+        env: tempEnv(),
+        service: () =>
+          service({
+            resolveActiveAccountAuth: async () => {
+              throw new Error("pool failed");
+            },
+          }),
+      },
+    );
+    expect(credential).toBeNull();
   });
 
   it("accepts either resolver shape from the registry", async () => {

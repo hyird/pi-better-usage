@@ -1,10 +1,10 @@
-export const EXTENSION_NAME = "pi-better-opencode-go";
+export const EXTENSION_NAME = "pi-better-usage";
 
 /** Global config lives at `~/.pi/agent/extensions/<CONFIG_BASENAME>`. */
-export const CONFIG_BASENAME = "opencode-go-usage.json";
+export const CONFIG_BASENAME = "pi-better-usage.json";
 
 /** Key for both the status line and the below-editor widget. */
-export const STATUS_KEY = "opencode-go-usage";
+export const STATUS_KEY = "pi-better-usage";
 
 export const COMMAND_NAME = "go-usage";
 

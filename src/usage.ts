@@ -10,6 +10,7 @@ const MAX_RESET_LENGTH = 64;
 const MAX_RESET_MS = 400 * 24 * 60 * 60_000;
 
 export type UsageWindow = {
+  label?: string;
   /** Raw endpoint status; anything other than "ok" is surfaced to the user. */
   status: string;
   percentUsed: number;
@@ -19,6 +20,7 @@ export type UsageWindow = {
 
 export type UsageSnapshot = {
   capturedAt: number;
+  providerLabel?: string;
   windows: Partial<Record<WindowKey, UsageWindow>>;
 };
 
@@ -113,7 +115,7 @@ export type UsageResponse = {
 
 export type FetchLike = (
   input: string,
-  init?: { headers?: Record<string, string>; signal?: AbortSignal },
+  init?: { headers?: Record<string, string>; signal?: AbortSignal; redirect?: "error" },
 ) => Promise<UsageResponse>;
 
 export async function fetchUsage(
@@ -129,10 +131,10 @@ export async function fetchUsage(
     response = await fetchImpl(USAGE_URL, {
       headers: { Authorization: `Bearer ${credential.apiKey}`, Accept: "application/json" },
       signal,
+      redirect: "error",
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new UsageError("transport", `OpenCode Go usage request failed: ${message}`);
+  } catch {
+    throw new UsageError("transport", "OpenCode Go usage request failed or timed out.");
   }
   if (!response.ok) throw httpError(response.status);
 
@@ -143,9 +145,8 @@ export async function fetchUsage(
   let payload: unknown;
   try {
     payload = await response.json();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new UsageError("invalid", `OpenCode Go usage returned an invalid body: ${message}`);
+  } catch {
+    throw new UsageError("invalid", "OpenCode Go usage returned an invalid body.");
   }
   return parseUsagePayload(payload, options.now ?? Date.now());
 }
@@ -232,7 +233,7 @@ export function usageSegments(
     if (!window) continue;
     if (shown > 0) segments.push({ text: " · ", severity: "muted" });
     const left = leftPercent(window.percentUsed);
-    segments.push({ text: `${WINDOW_LABELS[key]} `, severity: "muted" });
+    segments.push({ text: `${window.label ?? WINDOW_LABELS[key]} `, severity: "muted" });
     segments.push({ text: formatPercent(left), severity: severityForLeftPercent(left) });
     segments.push({ text: " left", severity: "muted" });
     // A non-ok window would otherwise be invisible behind a healthy percentage.
@@ -272,7 +273,9 @@ export function formatDetail(
   credential: UsageCredential,
   now = Date.now(),
 ): string {
-  const lines = [`OpenCode Go usage — account: ${credential.label} (${credential.source})`];
+  const lines = [
+    `${snapshot.providerLabel ?? "OpenCode Go"} usage — account: ${sanitizeLabel(credential.label)} (${credential.source})`,
+  ];
   for (const key of config.windows) {
     const window = snapshot.windows[key];
     if (!window) continue;
@@ -283,7 +286,7 @@ export function formatDetail(
     const status = window.status === "ok" ? "" : ` · ${window.status}`;
     const left = formatPercent(leftPercent(window.percentUsed));
     lines.push(
-      `${WINDOW_NAMES[key]}: ${Math.round(window.percentUsed)}% used · ${left} left${reset}${status}`,
+      `${window.label ?? WINDOW_NAMES[key]}: ${Math.round(window.percentUsed)}% used · ${left} left${reset}${status}`,
     );
   }
   lines.push(`Captured: ${new Date(snapshot.capturedAt).toLocaleTimeString()}`);

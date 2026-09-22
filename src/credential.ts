@@ -9,6 +9,7 @@ export type UsageCredentialSource = "multilogin" | "pi" | "authFile" | "env";
 
 export type UsageCredential = {
   apiKey: string;
+  accountId?: string;
   /** Pooled account label, or the credential source for Pi's own key. */
   label: string;
   source: UsageCredentialSource;
@@ -35,7 +36,7 @@ function tokenFromAuthObject(value: unknown): string | null {
  * `AuthResult` (`{ auth: { apiKey } }`) while request-level resolution returns the
  * credential directly (`{ apiKey }` or bearer `headers`).
  */
-function extractApiKey(authLike: unknown): string | null {
+export function extractApiKey(authLike: unknown): string | null {
   const direct = tokenFromAuthObject(authLike);
   if (direct) return direct;
   if (!authLike || typeof authLike !== "object") return null;
@@ -110,7 +111,8 @@ export async function resolveUsageCredential(
         };
       }
     } catch {
-      // Fall through to Pi's own credential.
+      // Never show the upstream account's quota after a pooled credential failure.
+      return null;
     }
   }
 

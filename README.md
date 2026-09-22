@@ -1,81 +1,65 @@
-# pi-better-opencode-go
+# pi-better-usage
 
-Better OpenCode Go for [pi](https://pi.dev) — your OpenCode Go subscription windows in a coloured
-widget below the editor, plus a `/go-usage` report.
+[pi](https://pi.dev) 的订阅用量扩展，只查询剩余额度与重置时间。
 
-The reading is styled after [pi-better-grok](https://github.com/monotykamary/pi-better-grok): what is
-_left_ of each window is coloured green/amber/red, the reset clock comes from the window closest to
-its limit, and the pooled account label trails the line as a dim suffix.
+基于 [pi-better-opencode-go](https://github.com/hyird/pi-better-usage) 扩展，参考
+[pi-better-openai](https://github.com/monotykamary/pi-better-openai) 和
+[pi-better-grok](https://github.com/monotykamary/pi-better-grok) 的认证与用量接口。
 
-```text
-Usage: 5h 96% left · wk 99% left · mo 99% left · ↺ 4h12m - 9:30 PM · zhong
-```
+## 支持范围
 
-Data comes from the official endpoint `GET https://opencode.ai/zen/go/v1/usage`, authenticated with
-the provider's own API key — no scraping, no browser, no extra dependency.
+| 服务             | Pi provider                    | 查询内容                                        |
+| ---------------- | ------------------------------ | ----------------------------------------------- |
+| OpenAI Codex     | `openai-codex`                 | 5 小时、每周额度；支持单周窗口和 Spark 独立额度 |
+| Grok / SuperGrok | `xai`、`xai-oauth`、`xai-auth` | 统一订阅账期剩余额度；兼容旧版月度 credits      |
+| OpenCode Go      | `opencode-go`                  | 5 小时、每周、每月额度                          |
 
-## Install
+这里的 OpenAI 指 Codex 订阅，OpenCode 指 Go 订阅。OpenAI / xAI API 账单、OpenCode Zen 按量余额不属于本扩展范围。
+
+## 安装
 
 ```bash
-pi install git:github.com/hyird/pi-better-opencode-go
+pi install git:github.com/hyird/pi-better-usage
 ```
 
-## Commands
+本地开发安装：
 
-| Command             | What it does                                                        |
-| ------------------- | ------------------------------------------------------------------- |
-| `/go-usage`         | Re-reads, then prints used/left and the reset time for each window  |
-| `/go-usage refresh` | Same report, without the "refresh forces an immediate request" hint |
+```bash
+pi install F:/Workspace/windows/pi-better-usage
+```
 
-## The reading
+在 Pi 内执行 `/reload`。如果已安装旧版 `pi-better-opencode-go`，先用
+`pi remove git:github.com/hyird/pi-better-opencode-go` 移除旧登记，避免重复加载。
+若同时使用 better-openai / better-grok，请关闭它们的用量显示，避免重复页脚。
 
-- One `Usage: ` line with a `% left` token per window — `5h`, `wk`, `mo` — in endpoint order. A
-  window the endpoint did not report is skipped rather than shown as zero.
-- Colour matches pi-better-grok's thresholds: **green** above 30% left, **amber** at 30% or below,
-  **red** at 10% or below.
-- The reset suffix is `↺ <countdown> - <clock>` (`↺ 4h12m - 9:30 PM`) and always describes the
-  window closest to its limit, which is the one that will run out first.
-- The pooled account label is the trailing `· zhong`, in the slot pi-better-grok uses for its banked
-  reset count. It is flattened to one line and capped at 24 characters before it reaches the
-  terminal.
-- A window whose status is not `ok` gets an ` !status` marker, so a broken window cannot hide
-  behind a healthy percentage.
-- The line is truncated to the terminal width with a dim `...`.
-- Like pi-better-openai/grok, no line is shown before the first successful fetch or after a
-  failed fetch. Errors are available through `/go-usage`, not as a persistent `Go ?` marker.
-- Switching away from `opencode-go` immediately removes the line. Pending requests are aborted
-  and invalidated, so late responses cannot restore old quota after a model/account switch or reload.
-- Refresh runs at startup, on model/account changes, and after each turn (subject to the cache TTL).
+## 命令
 
-## Credentials
+只注册一个命令：`/usage`。每次执行都会并行重新查询 OpenAI、Grok、OpenCode 三家订阅，显示剩余百分比和重置时间；未登录或查询失败的服务显示具体提示，不影响其他结果。
 
-The API key is resolved per request, in this order:
+默认在编辑器下方显示当前 provider 的用量，每 60 秒刷新；其他服务只在命令查询时访问。
 
-1. **pi-multiprovider pool** — `resolveActiveAccountAuth("opencode-go", ctx)` for the session's
-   active or pinned account.
-2. **Pi's provider registry** — `ctx.modelRegistry.getProviderAuth("opencode-go")`, accepting both
-   the `{ auth: { apiKey } }` and `{ apiKey }` / bearer `headers` shapes.
-3. **`~/.pi/agent/auth.json`** — the stored `{ type: "api_key", key }` entry.
-4. **`OPENCODE_API_KEY`**.
+```text
+Usage: 5h 75% left · wk 60% left · ↺ 2h3m - 14:03 · work
+```
 
-Nothing is cached to disk and no credential is ever logged, notified or rendered.
+以上为示例数据。剩余 ≤30% 为黄色，≤10% 为红色。重置倒计时对应最接近额度上限的窗口。
+未知窗口不会显示为 100% 剩余；请求失败会清除页脚，用命令查看错误。
 
-### pi-multiprovider
+## 认证与多账号
 
-When [pi-multiprovider](https://github.com/monotykamary/pi-multiprovider) pools `opencode-go`, the
-session's active (or pinned) account wins over Pi's own credential, its label is shown on the line,
-and switching accounts discards the previous account's reading instead of reusing its quota.
+- **OpenAI**：先 `/login openai-codex`。优先使用 pi-multiprovider 当前账号，再由 Pi 解析/刷新 OAuth；最后读取 Pi auth.json 中未过期的 OAuth。账号 ID 来自该 token 或同一条存储记录。
+- **Grok**：先 `/login xai`（或相应 OAuth provider）。同样优先使用 pi-multiprovider 与 Pi OAuth；还可复用 `grok login` 写入的 `~/.grok/auth.json`。自定义路径使用 `PI_GROK_AUTH_PATH`。普通 xAI API key 不能用于订阅查询。
+- **OpenCode Go**：优先 pi-multiprovider、Pi provider registry、Pi auth.json；最后使用 `OPENCODE_API_KEY`。
 
-This is the part no registry-based reading can do: `getProviderAuth()` cannot see pooled accounts —
-with a pool it resolves only the upstream credential — so a registry-only reading would silently
-report another account's quota.
+支持 `/multilogin` 和账号切换通知。模型、账号或会话变化会撤销旧请求并清除旧数据，避免显示上一账号的额度。池认证失败不会退回其他账号。
+认证失效时重新登录；扩展不自行重写认证文件。凭据不写入缓存、日志或通知。
 
-## Configuration
+## 配置
 
-Optional JSON, global at `$PI_CODING_AGENT_DIR/extensions/opencode-go-usage.json` (usually
-`~/.pi/agent/extensions/opencode-go-usage.json`) and overridden per project by
-`<project>/.pi/extensions/opencode-go-usage.json`. Every field has a default and invalid values are
-ignored, so a broken config never breaks the reading.
+全局：`$PI_CODING_AGENT_DIR/extensions/pi-better-usage.json`，默认
+`~/.pi/agent/extensions/pi-better-usage.json`。
+项目覆盖：`<project>/.pi/extensions/pi-better-usage.json`。
+从旧版升级时，将 `opencode-go-usage.json` 改名为 `pi-better-usage.json` 即可沿用设置。
 
 ```json
 {
@@ -85,57 +69,35 @@ ignored, so a broken config never breaks the reading.
     "windows": ["rolling", "weekly", "monthly"],
     "showAccountLabel": true
   },
-  "footer": { "mode": "status" }
+  "footerMode": "widget"
 }
 ```
 
-| Key                   | Default    | Meaning                                                                                  |
-| --------------------- | ---------- | ---------------------------------------------------------------------------------------- |
-| `enabled`             | `true`     | Master switch for display; `/go-usage` still queries on demand.                          |
-| `windows`             | all three  | Which windows to show, re-ordered to endpoint order. An empty list hides the line.       |
-| `refreshIntervalMs`   | `60000`    | Poll interval, clamped to 15s…1h. The cache is also refreshed after each agent turn.     |
-| `onlyOnOpencodeModel` | `true`     | Legacy field; provider isolation is now always enforced, just like the better-\* series. |
-| `showAccountLabel`    | `true`     | Append the active pooled account label.                                                  |
-| `footerMode`          | `"widget"` | Where the reading renders — see below.                                                   |
+- `footerMode`：`widget` 为彩色编辑器下方用量，`status` 为 Pi 页脚文本，`off` 隐藏。
+- `enabled: false` 关闭自动刷新与显示；手动命令仍可查询。
+- `refreshIntervalMs` 限制在 15 秒至 1 小时。
+- `windows` 同时过滤页脚与详情；未知 Grok 账期映射为 rolling，但显示标签为 period。
+- 兼容 better-grok 的 `footer.mode`：`status` 映射到 widget，`replace` 映射到 status。
 
-| `footerMode`         | Where the reading renders                                                                  |
-| -------------------- | ------------------------------------------------------------------------------------------ |
-| `widget` _(default)_ | Coloured line in the widget area below the editor — the same place pi-better-grok renders. |
-| `status`             | Plain text in Pi's own footer, next to the other extension statuses.                       |
-| `off`                | Hidden. `/go-usage` still works.                                                           |
+## 接口与限制
 
-The `usage` section accepts the display fields above; legacy flat fields remain supported.
-Like the other better-\* plugins, turning off a subscription-only check never enables a different
-provider's quota. OpenCode Go authenticates subscriptions with API keys, so no OAuth-only gate is used.
+- OpenAI：`GET https://chatgpt.com/backend-api/wham/usage`，Bearer OAuth + `chatgpt-account-id`。
+- Grok：先 `GET https://cli-chat-proxy.grok.com/v1/user` 验证身份，再请求
+  `GET /v1/billing?format=credits`，携带 `X-XAI-Token-Auth` 与 `x-userid`。
+- OpenCode Go：`GET https://opencode.ai/zen/go/v1/usage`，Bearer key。
 
-pi-better-grok's own config shape is accepted too: `{"footer": {"mode": "status"}}` maps to `widget`
-so a copied grok config looks identical, and grok's `replace` — a whole custom footer this extension
-does not own — degrades to `status`.
+OpenAI / Grok 使用与参考扩展一致的非公开接口，服务端变更可能导致查询失败。
+不提供购买、重置额度、fast mode、宠物、图片生成等功能。
+不自动发送模型请求；所有网络访问仅用于身份与用量读取。
 
-## Development
+## 开发与验证
 
 ```bash
-bun install
-bun run check   # typecheck, lint, format check, tests
-bun run test    # vitest only
+bun install --frozen-lockfile
+bun run check
 ```
 
-Tests pin `TZ=UTC` (see `vitest.config.ts`) because reset times render through the local time zone.
+测试包含响应解析、请求认证、账号隔离、失效处理、模型切换、延迟响应以及三家集成。
+HTTP 测试使用固定样例，不代表真实账号已联网验证。测试固定 UTC 和英文 locale；实际显示使用用户区域设置。
 
-## Security
-
-The endpoint is OpenCode's official usage surface and the request carries only the API key as a
-bearer token. This extension never stores, prints or notifies a credential, and it masks nothing it
-does not have to show: the account label is whatever pi-multiprovider announces.
-
-## Acknowledgments
-
-- [pi-better-grok](https://github.com/monotykamary/pi-better-grok) / [pi-better-openai](https://github.com/monotykamary/pi-better-openai)
-  — the footer reading this extension mirrors, including the severity thresholds and `footer.mode`
-  vocabulary.
-- [pi-multiprovider](https://github.com/monotykamary/pi-multiprovider) — the `pi-multiprovider:service`
-  announcement contract used for pooled accounts.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

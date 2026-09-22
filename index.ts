@@ -1,20 +1,3 @@
-/**
- * Better OpenCode Go for pi.
- *
- * Shows the OpenCode Go subscription windows (rolling 5h, weekly, monthly) in a
- * coloured widget below the editor and reports them with `/go-usage`, styled
- * after pi-better-grok: a `Usage: …` line with the remaining percentage coloured
- * green/amber/red, a `↺ <countdown> - <clock>` reset taken from the window
- * closest to its limit, and the pooled account label as a dim trailing suffix.
- *
- * Reads the official usage endpoint documented in `src/usage.ts`, authenticated
- * with the provider's API key. Credits resolve through pi-multiprovider when it
- * pools `opencode-go`, so `/switch-account` changes the reading with the account;
- * see `src/credential.ts`.
- *
- * Runtime imports are limited to `pi-tui` (width truncation), which the host
- * provides; nothing here pulls the coding-agent barrel at runtime.
- */
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -22,20 +5,16 @@ import type {
   ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { readConfig, type UsageConfig } from "./src/config.ts";
-import {
-  resolveUsageCredential,
-  type CredentialResolver,
-  type UsageCredential,
-} from "./src/credential.ts";
+import { type CredentialResolver, type UsageCredential } from "./src/credential.ts";
 import { truncateToWidth } from "./src/format.ts";
-import { COMMAND_NAME, PROVIDER_ID, STATUS_KEY } from "./src/identity.ts";
+import { PROVIDER_ID, STATUS_KEY } from "./src/identity.ts";
+import { USAGE_PROVIDERS, type UsageProvider } from "./src/providers.ts";
 import {
   isMultiproviderService,
   MULTIPROVIDER_SERVICE_EVENT,
   type MultiproviderService,
 } from "./src/multiprovider.ts";
 import {
-  fetchUsage,
   formatDetail,
   UsageError,
   usageSegments,
@@ -89,8 +68,13 @@ export type RegisterOptions = {
   now?: () => number;
 };
 
-/** Wires the status widget, `/go-usage`, and the multilogin account listener. */
-export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptions = {}): void {
+/** Each provider owns its cache, polling and account listeners. */
+export function registerProviderUsage(
+  pi: ExtensionAPI,
+  provider: UsageProvider,
+  options: RegisterOptions = {},
+): (ctx: ExtensionContext) => Promise<string> {
+  const statusKey = `${STATUS_KEY}-${provider.id}`;
   const env = options.env ?? process.env;
   const now = options.now ?? (() => Date.now());
 
@@ -122,7 +106,7 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
     if (text === lastStatusText) return;
     lastStatusText = text;
     try {
-      ctx.ui.setStatus(STATUS_KEY, text);
+      ctx.ui.setStatus(statusKey, text);
     } catch {
       // A stale ctx after session replacement must not break the turn.
     }
@@ -133,7 +117,7 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
     widgetInstalled = parts !== undefined;
     try {
       ctx.ui.setWidget(
-        STATUS_KEY,
+        statusKey,
         parts
           ? (_tui, theme) => ({
               invalidate() {},
@@ -152,7 +136,7 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
   };
 
   const eligible = (ctx: ExtensionContext): boolean =>
-    config.enabled && (activeProvider ?? ctx.model?.provider) === PROVIDER_ID;
+    config.enabled && provider.providerIds.includes(activeProvider ?? ctx.model?.provider ?? "");
 
   const render = (ctx: ExtensionContext): void => {
     if (!eligible(ctx) || config.footerMode === "off") {
@@ -181,33 +165,40 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
 
   /**
    * `force` bypasses the TTL and the auth cooldown; `ignoreEligibility` also
-   * bypasses the OpenCode-Go-only gate, which only an explicit /go-usage should do.
+   * bypasses the active-model gate for an explicit usage command.
    */
   const refresh = async (
     ctx: ExtensionContext,
     mode: { force?: boolean; ignoreEligibility?: boolean } = {},
   ): Promise<void> => {
-    if (!config.enabled) return;
+    if (!config.enabled && !mode.ignoreEligibility) return;
     if (!mode.ignoreEligibility && !eligible(ctx)) return;
     if (!mode.force && authBlockedUntil > now()) return;
     if (!mode.force && cache && now() - cache.fetchedAt < config.refreshIntervalMs) return;
-    if (refreshing) return;
+    if (refreshing) {
+      if (!mode.force) return;
+      invalidateRefresh();
+    }
     refreshing = true;
     const requestGeneration = generation;
     refreshAbort = new AbortController();
     const signal = refreshAbort.signal;
     try {
-      const credential = await resolveUsageCredential(ctx, { service: () => service, env });
+      const credential = await provider.resolve(ctx, { service: () => service, env }, signal);
       if (requestGeneration !== generation) return;
       if (!credential) {
         cache = undefined;
-        lastError = `No OpenCode Go credential. Use /login ${PROVIDER_ID} or /multilogin ${PROVIDER_ID}.`;
+        lastError = `No ${provider.name} subscription credential. Use ${provider.loginHint}.`;
         render(ctx);
         return;
       }
       // A pooled account switch changes the quota owner; never reuse its reading.
       if (cache && cache.credential.fingerprint !== credential.fingerprint) cache = undefined;
-      const snapshot = await fetchUsage(credential, {
+      const snapshot = await provider.fetch(credential, {
+        modelId:
+          ctx.model?.provider && provider.providerIds.includes(ctx.model.provider)
+            ? ctx.model.id
+            : undefined,
         signal,
         fetchImpl: options.fetchImpl,
         now: now(),
@@ -222,7 +213,7 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
       const usageError =
         error instanceof UsageError
           ? error
-          : new UsageError("transport", error instanceof Error ? error.message : String(error));
+          : new UsageError("transport", `${provider.name} usage is unavailable.`);
       lastError = usageError.message;
       if (usageError.kind === "auth") authBlockedUntil = now() + AUTH_FAILURE_COOLDOWN_MS;
       render(ctx);
@@ -240,17 +231,22 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
     unsubscribeAccount = undefined;
     service = candidate;
     try {
-      unsubscribeAccount = candidate.onActiveAccountChanged(PROVIDER_ID, (event) => {
-        // Drop the previous account's numbers, then re-read for the new one.
-        invalidateRefresh();
-        cache = undefined;
-        lastError = undefined;
-        authBlockedUntil = 0;
-        const ctx = lastCtx ?? event?.ctx;
-        if (!ctx) return;
-        render(ctx);
-        void refresh(ctx, { force: true }).catch(() => undefined);
-      });
+      const subscriptions = provider.providerIds.map((providerId) =>
+        candidate.onActiveAccountChanged(providerId, (event) => {
+          // Drop the previous account's numbers, then re-read for the new one.
+          invalidateRefresh();
+          cache = undefined;
+          lastError = undefined;
+          authBlockedUntil = 0;
+          const ctx = lastCtx ?? event?.ctx;
+          if (!ctx) return;
+          render(ctx);
+          void refresh(ctx, { force: true }).catch(() => undefined);
+        }),
+      );
+      unsubscribeAccount = () => {
+        for (const unsubscribe of subscriptions) unsubscribe();
+      };
     } catch {
       unsubscribeAccount = undefined;
     }
@@ -278,6 +274,9 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
   pi.on("session_start", (_event, ctx) => {
     invalidateRefresh();
     config = readConfig(env, ctx.cwd);
+    cache = undefined;
+    lastError = undefined;
+    authBlockedUntil = 0;
     lastCtx = ctx;
     activeProvider = ctx.model?.provider;
     lastStatusText = undefined;
@@ -294,6 +293,9 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
     invalidateRefresh();
     lastCtx = ctx;
     activeProvider = event.model?.provider ?? ctx.model?.provider;
+    cache = undefined;
+    lastError = undefined;
+    authBlockedUntil = 0;
     // Clear immediately, before any asynchronous credential or usage request.
     render(ctx);
     if (eligible(ctx)) void refresh(ctx, { force: true }).catch(() => undefined);
@@ -329,33 +331,28 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
     lastStatusText = undefined;
   });
 
-  pi.registerCommand(COMMAND_NAME, {
-    description: "Show OpenCode Go subscription usage (rolling 5h, weekly, monthly)",
-    handler: async (args: string, ctx: ExtensionContext) => {
-      const explicit = args.trim() === "refresh";
-      // The command always re-reads, even off an OpenCode Go model.
-      await refresh(ctx, { force: true, ignoreEligibility: true });
-      const lines: string[] = [];
-      if (cache && !lastError) {
-        lines.push(formatDetail(cache.snapshot, config, cache.credential));
-      } else {
-        lines.push(`Usage unavailable: ${lastError ?? "not fetched yet"}`);
-      }
-      if (!config.enabled) {
-        lines.push("Display is disabled by the opencode-go-usage.json config.");
-      } else if (!eligible(ctx)) {
-        lines.push(
-          `The reading is hidden for this model; /${COMMAND_NAME} still queries on demand.`,
-        );
-      }
-      if (!explicit) lines.push(`(/${COMMAND_NAME} refresh forces an immediate request)`);
-      ctx.ui.notify(lines.join("\n"), cache && !lastError ? "info" : "warning");
+  const report = async (ctx: ExtensionContext): Promise<string> => {
+    await refresh(ctx, { force: true, ignoreEligibility: true });
+    return cache && !lastError
+      ? formatDetail(cache.snapshot, config, cache.credential, now())
+      : provider.name + " usage unavailable: " + (lastError ?? "request superseded; try again");
+  };
+  return report;
+}
+
+export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): void {
+  const reports = USAGE_PROVIDERS.map((provider) => registerProviderUsage(pi, provider, options));
+  pi.registerCommand("usage", {
+    description: "Show all OpenAI, Grok and OpenCode subscription usage",
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      const details = await Promise.all(reports.map((report) => report(ctx)));
+      ctx.ui.notify(details.join("\n\n"), "info");
     },
   });
 }
 
 export default function (pi: ExtensionAPI): void {
-  registerOpencodeGoUsage(pi);
+  registerUsage(pi);
 }
 
 /** Re-exported for hosts that want to share the resolver. */

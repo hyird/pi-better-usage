@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerOpencodeGoUsage } from "../index.ts";
+import { registerProviderUsage } from "../index.ts";
 import { globalConfigPath } from "../src/paths.ts";
 import { MULTIPROVIDER_SERVICE_EVENT, type MultiproviderService } from "../src/multiprovider.ts";
+import { USAGE_PROVIDERS } from "../src/providers.ts";
 import type { FetchLike } from "../src/usage.ts";
 
 const NOW = Date.parse("2026-09-22T12:00:00Z");
@@ -111,7 +112,14 @@ function makeHarness(
       };
     });
 
-  registerOpencodeGoUsage(pi, { env, now: options.now ?? (() => NOW), fetchImpl });
+  const report = registerProviderUsage(pi, USAGE_PROVIDERS.find((p) => p.id === "opencode")!, {
+    env,
+    now: options.now ?? (() => NOW),
+    fetchImpl,
+  });
+  commands.set("usage", async (_args, ctx) => {
+    ctx.ui.notify(await report(ctx), "info");
+  });
   cleanups.push(() => {
     handlers.get("session_shutdown")?.({}, ctx);
   });
@@ -129,7 +137,7 @@ function makeHarness(
     pi,
     count: () => fetches,
     start: () => handlers.get("session_start")?.({}, ctx),
-    command: () => commands.get("go-usage"),
+    command: () => commands.get("usage"),
     lastWidget: () => widgets.at(-1)?.content,
     lastStatus: () => statuses.at(-1),
   };
@@ -354,7 +362,7 @@ describe("footer modes", () => {
     );
   });
 
-  it("off hides the reading but keeps /go-usage working", async () => {
+  it("off hides the reading but keeps /usage working", async () => {
     const harness = makeHarness({ config: { footerMode: "off" } });
     await settle(harness);
 
@@ -428,7 +436,7 @@ describe("refresh policy", () => {
     expect(harness.lastWidget()).toBeUndefined();
 
     await harness.command()?.("", harness.ctx);
-    expect(harness.notifications.at(-1)).toContain("No OpenCode Go credential");
+    expect(harness.notifications.at(-1)).toContain("No OpenCode Go subscription credential");
   });
 });
 
@@ -503,7 +511,7 @@ describe("multilogin accounts", () => {
   });
 });
 
-describe("/go-usage", () => {
+describe("/usage", () => {
   it("prints the per-window report", async () => {
     const harness = makeHarness();
     await settle(harness);
@@ -511,22 +519,23 @@ describe("/go-usage", () => {
 
     expect(harness.notifications.at(-1)).toContain("account: pi (pi)");
     expect(harness.notifications.at(-1)).toContain("5h rolling: 3% used · 97% left");
-    expect(harness.notifications.at(-1)).toContain("go-usage refresh forces an immediate request");
+    expect(harness.count()).toBe(2);
   });
 
-  it("omits the hint for an explicit refresh", async () => {
+  it("queries again on each invocation", async () => {
     const harness = makeHarness();
     await settle(harness);
     await harness.command()?.("refresh", harness.ctx);
 
-    expect(harness.notifications.at(-1)).not.toContain("forces an immediate request");
+    expect(harness.count()).toBe(2);
   });
 
-  it("explains that the reading is hidden for other models", async () => {
+  it("queries on demand while keeping the footer hidden for other models", async () => {
     const harness = makeHarness({ provider: "xai" });
     await settle(harness);
     await harness.command()?.("", harness.ctx);
 
-    expect(harness.notifications.at(-1)).toContain("The reading is hidden for this model");
+    expect(harness.notifications.at(-1)).toContain("OpenCode Go usage");
+    expect(harness.lastWidget()).toBeUndefined();
   });
 });

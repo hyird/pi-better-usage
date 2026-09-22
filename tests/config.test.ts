@@ -173,16 +173,18 @@ describe("readConfig", () => {
 describe("paths", () => {
   it("honours PI_CODING_AGENT_DIR, including a leading tilde", () => {
     expect(piAgentDir({ PI_CODING_AGENT_DIR: "/custom/agent" }, "/home/x")).toBe("/custom/agent");
-    expect(piAgentDir({ PI_CODING_AGENT_DIR: "~/custom" }, "/home/x")).toBe("/home/x/custom");
+    expect(piAgentDir({ PI_CODING_AGENT_DIR: "~/custom" }, "/home/x")).toBe(
+      join("/home/x", "custom"),
+    );
     expect(piAgentDir({}, "/home/x")).toBe(join("/home/x", ".pi", "agent"));
   });
 
   it("places the config next to the other extension configs", () => {
     expect(globalConfigPath({ PI_CODING_AGENT_DIR: "/agent" })).toBe(
-      join("/agent", "extensions", "opencode-go-usage.json"),
+      join("/agent", "extensions", "pi-better-usage.json"),
     );
     expect(projectConfigPath("/repo")).toBe(
-      join("/repo", ".pi", "extensions", "opencode-go-usage.json"),
+      join("/repo", ".pi", "extensions", "pi-better-usage.json"),
     );
   });
 });
