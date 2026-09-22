@@ -111,6 +111,67 @@ it("queries all providers on demand, even when automatic display is disabled", a
   expect(report).toContain("40% left");
   expect([...h.widgets.values()].filter(Boolean)).toHaveLength(0);
 });
+
+it("shows each provider's own cached quota immediately when switching providers", async () => {
+  const h = harness();
+  h.emit("session_start");
+  await flush();
+  await h.commands.get("usage")!.handler("", h.ctx);
+  const pending: (() => void)[] = [];
+  h.fetchImpl.mockImplementation(async (url) => {
+    await new Promise<void>((resolve) => pending.push(resolve));
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () =>
+        url === GROK_USER_URL
+          ? { userId: "test" }
+          : url.includes("grok.com")
+            ? { config: { creditUsagePercent: 40 } }
+            : url === OPENAI_USAGE_URL
+              ? { rate_limit: { primary_window: { used_percent: 25 } } }
+              : { usage: { weekly: { percent: 60 } } },
+    };
+  });
+  for (const [provider, key, left] of [
+    ["xai", "grok", "60%"],
+    ["opencode-go", "opencode", "40%"],
+    ["openai-codex", "openai", "75%"],
+  ]) {
+    h.ctx.model = { ...h.ctx.model!, provider: provider! };
+    h.emit("model_select");
+    const widget = h.widgets.get(`pi-better-usage-${key}`) as (
+      _tui: unknown,
+      theme: unknown,
+    ) => { render(width: number): string[] };
+    expect(widget).toBeTypeOf("function");
+    expect(
+      widget(undefined, { fg: (_color: string, text: string) => text }).render(200)[0],
+    ).toContain(left);
+    for (const other of ["openai", "grok", "opencode"].filter((id) => id !== key)) {
+      expect(h.widgets.get(`pi-better-usage-${other}`)).toBeUndefined();
+    }
+    await flush();
+  }
+  h.emit("session_shutdown");
+  pending.forEach((resolve) => resolve());
+  await flush();
+  pending.forEach((resolve) => resolve());
+  await flush();
+});
+
+it("does not reuse default Codex quota for Spark, even with the same account", async () => {
+  const h = harness();
+  h.emit("session_start");
+  await flush();
+  h.ctx.model = { ...h.ctx.model!, id: "gpt-5.3-codex-spark" };
+  h.emit("model_select");
+  expect(h.widgets.get("pi-better-usage-openai")).toBeUndefined();
+  await flush();
+  // Fixture has no Spark bucket: default quota must not reappear.
+  expect(h.widgets.get("pi-better-usage-openai")).toBeUndefined();
+});
 it("keeps other provider results when one provider rejects authentication", async () => {
   const h = harness(false, async (url) => ({
     ok: url !== OPENAI_USAGE_URL,

@@ -58,6 +58,7 @@ export function isOpencodeGoModel(ctx: Pick<ExtensionContext, "model">): boolean
 }
 
 type CacheState = {
+  scope: string;
   credential: UsageCredential;
   snapshot: UsageSnapshot;
   fetchedAt: number;
@@ -93,6 +94,15 @@ export function registerProviderUsage(
   // Invalidate pending work on model/account/session changes.
   let generation = 0;
   let activeProvider: string | undefined;
+  let activeModelId: string | undefined;
+  const scopeFor = (providerId?: string, modelId?: string): string => {
+    const id = provider.providerIds.includes(providerId ?? "")
+      ? providerId
+      : provider.providerIds[0];
+    const bucket =
+      provider.id === "openai" && modelId === "gpt-5.3-codex-spark" ? "spark" : "default";
+    return `${id}:${bucket}`;
+  };
   let refreshAbort: AbortController | undefined;
   const invalidateRefresh = (): void => {
     generation += 1;
@@ -148,7 +158,10 @@ export function registerProviderUsage(
 
     // Match the better-* series: no placeholder or stale quota after a failure.
     const segments =
-      cache && !lastError
+      cache &&
+      !lastError &&
+      cache.scope ===
+        scopeFor(activeProvider ?? ctx.model?.provider, activeModelId ?? ctx.model?.id)
         ? usageSegments(cache.snapshot, config, accountLabel(cache.credential), now())
         : [];
     const parts: UsageSegment[] | undefined = segments.length > 0 ? segments : undefined;
@@ -182,6 +195,7 @@ export function registerProviderUsage(
     }
     refreshing = true;
     const requestGeneration = generation;
+    const scope = scopeFor(ctx.model?.provider, ctx.model?.id);
     refreshAbort = new AbortController();
     const signal = refreshAbort.signal;
     try {
@@ -194,7 +208,13 @@ export function registerProviderUsage(
         return;
       }
       // A pooled account switch changes the quota owner; never reuse its reading.
-      if (cache && cache.credential.fingerprint !== credential.fingerprint) cache = undefined;
+      if (
+        cache &&
+        (cache.credential.fingerprint !== credential.fingerprint || cache.scope !== scope)
+      ) {
+        cache = undefined;
+        render(ctx);
+      }
       const snapshot = await provider.fetch(credential, {
         modelId:
           ctx.model?.provider && provider.providerIds.includes(ctx.model.provider)
@@ -205,7 +225,7 @@ export function registerProviderUsage(
         now: now(),
       });
       if (requestGeneration !== generation) return;
-      cache = { credential, snapshot, fetchedAt: now() };
+      cache = { scope, credential, snapshot, fetchedAt: now() };
       lastError = undefined;
       authBlockedUntil = 0;
       render(ctx);
@@ -280,6 +300,7 @@ export function registerProviderUsage(
     authBlockedUntil = 0;
     lastCtx = ctx;
     activeProvider = ctx.model?.provider;
+    activeModelId = ctx.model?.id;
     lastStatusText = undefined;
     render(ctx);
     stopTimer();
@@ -292,14 +313,21 @@ export function registerProviderUsage(
 
   pi.on("model_select", (event, ctx) => {
     invalidateRefresh();
-    lastCtx = ctx;
-    activeProvider = event.model?.provider ?? ctx.model?.provider;
-    cache = undefined;
-    lastError = undefined;
+    const model = event.model ?? ctx.model;
+    const selectedCtx = Object.create(ctx, {
+      model: { value: model, enumerable: true },
+    }) as ExtensionContext;
+    lastCtx = selectedCtx;
+    activeProvider = model?.provider;
+    activeModelId = model?.id;
+    // A provider's cached quota survives model switches; aliases and independent
+    // quota buckets cannot share it. Account events still invalidate immediately.
+    if (eligible(selectedCtx) && cache && cache.scope !== scopeFor(activeProvider, activeModelId)) {
+      cache = undefined;
+    }
     authBlockedUntil = 0;
-    // Clear immediately, before any asynchronous credential or usage request.
-    render(ctx);
-    if (eligible(ctx)) void refresh(ctx, { force: true }).catch(() => undefined);
+    render(selectedCtx);
+    if (eligible(selectedCtx)) void refresh(selectedCtx, { force: true }).catch(() => undefined);
   });
 
   const updateDisplay = (_event: unknown, ctx: ExtensionContext): void => {
@@ -329,6 +357,7 @@ export function registerProviderUsage(
     lastError = undefined;
     authBlockedUntil = 0;
     activeProvider = undefined;
+    activeModelId = undefined;
     lastStatusText = undefined;
   });
 

@@ -217,9 +217,66 @@ describe("model and session transitions", () => {
     await flush();
     expect(harness.count()).toBe(1);
     switchTo(harness, "opencode-go");
+    expect(renderWidget(harness.lastWidget())).toContain("97%");
     await flush();
     expect(renderWidget(harness.lastWidget())).toContain("97%");
     expect(harness.widgets.at(-1)?.options).toEqual({ placement: "belowEditor" });
+  });
+
+  it("keeps the same account's quota visible while a new model refreshes in the background", async () => {
+    let calls = 0;
+    let finish!: () => void;
+    const harness = makeHarness({
+      fetchImpl: async () => {
+        const payload = okPayload();
+        if (++calls > 1) {
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          payload.usage.rolling.percent = 80;
+        }
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => payload };
+      },
+    });
+    await settle(harness);
+    const writes = harness.widgets.length;
+    const model = { ...harness.ctx.model!, id: "another-model" };
+    harness.handlers.get("model_select")?.({ model }, harness.ctx);
+    expect(renderWidget(harness.lastWidget())).toContain("97%");
+    await flush();
+    expect(calls).toBe(2);
+    expect(harness.widgets.slice(writes).every((entry) => entry.content !== undefined)).toBe(true);
+    finish();
+    await flush();
+    expect(renderWidget(harness.lastWidget())).toContain("20%");
+  });
+
+  it("clears the cached quota as soon as background resolution detects another account", async () => {
+    let calls = 0;
+    let finish!: () => void;
+    const harness = makeHarness({
+      fetchImpl: async () => {
+        if (++calls > 1)
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => okPayload(),
+        };
+      },
+    });
+    await settle(harness);
+    harness.ctx.modelRegistry.getProviderAuth = async () =>
+      ({ auth: { apiKey: "other-account" } }) as never;
+    switchTo(harness, "opencode-go");
+    await flush();
+    expect(harness.lastWidget()).toBeUndefined();
+    finish();
+    await flush();
+    expect(harness.lastWidget()).toBeTypeOf("function");
   });
 
   it("polls using the latest model context and stays quiet on other providers", async () => {

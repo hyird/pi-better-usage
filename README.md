@@ -64,7 +64,7 @@ Usage: 5h 75% left · wk 60% left · ↺ 2h3m - 9/22 14:03 · work
 - **Grok**：先 `/login xai`（或相应 OAuth provider）。同样优先使用 pi-multiprovider 与 Pi OAuth；还可复用 `grok login` 写入的 `~/.grok/auth.json`。自定义路径使用 `PI_GROK_AUTH_PATH`。普通 xAI API key 不能用于订阅查询。
 - **OpenCode Go**：优先 pi-multiprovider、Pi provider registry、Pi auth.json；最后使用 `OPENCODE_API_KEY`。
 
-支持 `/multilogin` 和账号切换通知。模型、账号或会话变化会撤销旧请求并清除旧数据，避免显示上一账号的额度。池认证失败不会退回其他账号。
+支持 `/multilogin` 和账号切换通知。模型切换会撤销旧请求。同一账号的普通模型共用额度缓存；切换到其他服务时立即显示该服务已有的缓存，并在后台重新查询。首次查询前不会虚构额度。账号或会话变化会清除缓存，Spark 等独立额度类型不与默认额度混用。后台检测到凭据变化时，先清除旧额度再请求新账号。池认证失败不会退回其他账号。
 认证失效时重新登录；扩展不自行重写认证文件。凭据不写入缓存、日志或通知。
 
 ## 配置
