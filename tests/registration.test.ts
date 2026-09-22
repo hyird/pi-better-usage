@@ -170,7 +170,7 @@ describe("widget placement", () => {
 
     expect(renderWidget(harness.lastWidget())).toBe(
       "{dim|Usage: }{dim|5h }{success|97%}{dim| left}{dim| · }{dim|wk }{success|99%}{dim| left}" +
-        "{dim| · }{dim|mo }{success|99%}{dim| left}{dim| · ↺ 2h3m - 2:03 PM}{dim| · pi}",
+        "{dim| · }{dim|mo }{success|99%}{dim| left}{dim| · ↺ 2h3m - 2026-09-22 14:03}",
     );
     expect(renderWidget(harness.lastWidget(), 20)).toMatch(/\{dim\|\.\.\./);
   });
@@ -196,7 +196,7 @@ describe("widget placement", () => {
     await settle(harness);
 
     expect(harness.lastStatus()).toBe(
-      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2:03 PM · pi",
+      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2026-09-22 14:03",
     );
   });
 });
@@ -358,7 +358,7 @@ describe("footer modes", () => {
 
     expect(harness.widgets.at(-1)?.content).toBeUndefined();
     expect(harness.lastStatus()).toBe(
-      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2:03 PM · pi",
+      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2026-09-22 14:03",
     );
   });
 
@@ -458,7 +458,7 @@ describe("multilogin accounts", () => {
   it("announces the pool and shows the pooled account label", async () => {
     const harness = makeHarness();
     await settle(harness);
-    expect(renderWidget(harness.lastWidget())).toContain("· pi");
+    expect(renderWidget(harness.lastWidget())).not.toContain("· pi");
 
     let listener: ((event: unknown) => void) | undefined;
     harness.eventListeners.get(MULTIPROVIDER_SERVICE_EVENT)?.(
@@ -517,7 +517,7 @@ describe("/usage", () => {
     await settle(harness);
     await harness.command()?.("", harness.ctx);
 
-    expect(harness.notifications.at(-1)).toContain("account: pi (pi)");
+    expect(harness.notifications.at(-1)?.split("\n")[0]).toBe("OpenCode Go usage");
     expect(harness.notifications.at(-1)).toContain("5h rolling: 3% used · 97% left");
     expect(harness.count()).toBe(2);
   });

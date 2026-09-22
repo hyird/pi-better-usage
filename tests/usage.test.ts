@@ -233,12 +233,12 @@ describe("formatCountdown", () => {
 });
 
 describe("formatClock", () => {
-  it("omits the weekday on the current day", () => {
-    expect(formatClock(NOW + 3 * 60_000, NOW)).toBe("12:03 PM");
+  it("uses a numeric date and 24-hour clock on the current day", () => {
+    expect(formatClock(NOW + 3 * 60_000, NOW)).toBe("2026-09-22 12:03");
   });
 
-  it("prefixes the weekday on another day", () => {
-    expect(formatClock(NOW + 20 * 86_400_000, NOW)).toBe("Mon 12:00 PM");
+  it("uses the same date and clock format on another day", () => {
+    expect(formatClock(NOW + 20 * 86_400_000, NOW)).toBe("2026-10-12 12:00");
   });
 });
 
@@ -280,14 +280,14 @@ describe("usageSegments", () => {
       { text: "mo ", severity: "muted" },
       { text: "5%", severity: "critical" },
       { text: " left", severity: "muted" },
-      { text: " · ↺ 20d0h - Mon 12:00 PM", severity: "muted" },
+      { text: " · ↺ 20d0h - 2026-10-12 12:00", severity: "muted" },
       { text: " · zhong", severity: "muted" },
     ]);
   });
 
   it("flattens to the agreed line", () => {
     expect(segments.map((segment) => segment.text).join("")).toBe(
-      "Usage: 5h 97% left · wk 88% left · mo 5% left · ↺ 20d0h - Mon 12:00 PM · zhong",
+      "Usage: 5h 97% left · wk 88% left · mo 5% left · ↺ 20d0h - 2026-10-12 12:00 · zhong",
     );
   });
 
@@ -319,7 +319,7 @@ describe("usageSegments", () => {
 
   it("can hide the account label", () => {
     expect(formatStatusLine(FULL, config({ showAccountLabel: false }), "zhong", NOW)).toBe(
-      "Usage: 5h 97% left · wk 88% left · mo 5% left · ↺ 20d0h - Mon 12:00 PM",
+      "Usage: 5h 97% left · wk 88% left · mo 5% left · ↺ 20d0h - 2026-10-12 12:00",
     );
   });
 
@@ -355,9 +355,9 @@ describe("usageSegments", () => {
 describe("formatDetail", () => {
   it("reports used and left per window", () => {
     const detail = formatDetail(FULL, config(), CREDENTIAL, NOW);
-    expect(detail).toContain("account: zhong (multilogin)");
-    expect(detail).toContain("5h rolling: 3% used · 97% left · resets in 2h3m (2:03 PM)");
-    expect(detail).toContain("month: 95% used · 5% left · resets in 20d0h (Mon 12:00 PM)");
+    expect(detail).toContain("account: zhong");
+    expect(detail).toContain("5h rolling: 3% used · 97% left · resets in 2h3m (2026-09-22 14:03)");
+    expect(detail).toContain("month: 95% used · 5% left · resets in 20d0h (2026-10-12 12:00)");
   });
 
   it("omits the reset time when there is none", () => {

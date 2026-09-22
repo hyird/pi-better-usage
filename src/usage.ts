@@ -164,14 +164,16 @@ export function formatCountdown(msRemaining: number): string {
   return `${total % 60}s`;
 }
 
-export function formatClock(instant: number, now = Date.now()): string {
-  const reset = new Date(instant);
-  const time = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
-    reset,
-  );
-  if (reset.toDateString() === new Date(now).toDateString()) return time;
-  const weekday = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(reset);
-  return `${weekday} ${time}`;
+/** One local-time, 24-hour format for every provider, reset and capture time. */
+export function formatClock(instant: number, _now = Date.now()): string {
+  const date = new Date(instant);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** Credential source names are internal metadata, not account labels. */
+export function accountLabel(credential: UsageCredential): string | undefined {
+  return credential.source === "multilogin" ? sanitizeLabel(credential.label) : undefined;
 }
 
 /** The window closest to its limit drives the countdown shown in the widget. */
@@ -216,7 +218,7 @@ export function severityForLeftPercent(percent: number): UsageSeverity {
 
 /**
  * Coloured segments behind the widget, e.g.
- * `Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - Mon 5:34 PM · zhong`.
+ * `Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2026-09-22 17:34 · zhong`.
  * Percentages are what is left of each window; the reset clock comes from the
  * window closest to its limit.
  */
@@ -266,15 +268,16 @@ export function formatStatusLine(
   return segments.length > 0 ? segments.map((segment) => segment.text).join("") : undefined;
 }
 
-/** Multi-line report behind `/go-usage`. */
+/** Multi-line report behind `/usage`. */
 export function formatDetail(
   snapshot: UsageSnapshot,
   config: UsageConfig,
   credential: UsageCredential,
   now = Date.now(),
 ): string {
+  const account = config.showAccountLabel ? accountLabel(credential) : undefined;
   const lines = [
-    `${snapshot.providerLabel ?? "OpenCode Go"} usage — account: ${sanitizeLabel(credential.label)} (${credential.source})`,
+    `${snapshot.providerLabel ?? "OpenCode Go"} usage${account ? ` — account: ${account}` : ""}`,
   ];
   for (const key of config.windows) {
     const window = snapshot.windows[key];
@@ -289,6 +292,6 @@ export function formatDetail(
       `${window.label ?? WINDOW_NAMES[key]}: ${Math.round(window.percentUsed)}% used · ${left} left${reset}${status}`,
     );
   }
-  lines.push(`Captured: ${new Date(snapshot.capturedAt).toLocaleTimeString()}`);
+  lines.push(`Captured: ${formatClock(snapshot.capturedAt)}`);
   return lines.join("\n");
 }

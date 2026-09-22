@@ -15,6 +15,7 @@ import {
   type MultiproviderService,
 } from "./src/multiprovider.ts";
 import {
+  accountLabel,
   formatDetail,
   UsageError,
   usageSegments,
@@ -148,7 +149,7 @@ export function registerProviderUsage(
     // Match the better-* series: no placeholder or stale quota after a failure.
     const segments =
       cache && !lastError
-        ? usageSegments(cache.snapshot, config, cache.credential.label, now())
+        ? usageSegments(cache.snapshot, config, accountLabel(cache.credential), now())
         : [];
     const parts: UsageSegment[] | undefined = segments.length > 0 ? segments : undefined;
 
