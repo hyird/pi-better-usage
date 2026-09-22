@@ -36,6 +36,19 @@ pi install F:/Workspace/windows/pi-better-usage
 
 只注册一个命令：`/usage`。每次执行都会并行重新查询 OpenAI、Grok、OpenCode 三家订阅，显示剩余百分比和重置时间；未登录或查询失败的服务显示具体提示，不影响其他结果。
 
+每个额度窗口显示 20 格进度条，实心 `█` 表示剩余额度，空心 `░` 表示已用额度（每格约 5%，旁边的数字为实际百分比）。在终端中按剩余比例显示绿色、黄色或红色。
+
+```text
+OpenAI Codex usage
+5h rolling: [███████████████░░░░░] 75% left · 25% used
+  Resets: 2026-09-22 23:33 · in 2h3m
+week: [████████████░░░░░░░░] 60% left · 40% used
+  Resets: 2026-09-27 21:30 · in 5d0h
+Captured: 2026-09-22 21:30
+```
+
+进度条样式参考 [pi-usage](https://github.com/TianZuo555/pi-extensions/tree/main/packages/pi-usage)，仅借鉴展示方式。
+
 默认在编辑器下方显示当前 provider 的用量，每 60 秒刷新；其他服务只在命令查询时访问。
 
 ```text

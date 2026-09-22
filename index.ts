@@ -335,7 +335,15 @@ export function registerProviderUsage(
   const report = async (ctx: ExtensionContext): Promise<string> => {
     await refresh(ctx, { force: true, ignoreEligibility: true });
     return cache && !lastError
-      ? formatDetail(cache.snapshot, config, cache.credential, now())
+      ? formatDetail(
+          cache.snapshot,
+          config,
+          cache.credential,
+          now(),
+          hasTerminalUI(ctx) && ctx.ui.theme
+            ? (severity, text) => ctx.ui.theme.fg(SEVERITY_COLORS[severity], text)
+            : undefined,
+        )
       : provider.name + " usage unavailable: " + (lastError ?? "request superseded; try again");
   };
   return report;

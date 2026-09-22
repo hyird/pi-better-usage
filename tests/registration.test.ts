@@ -370,7 +370,9 @@ describe("footer modes", () => {
     expect(harness.lastStatus()).toBeUndefined();
 
     await harness.command()?.("", harness.ctx);
-    expect(harness.notifications.at(-1)).toContain("5h rolling: 3% used · 97% left");
+    expect(harness.notifications.at(-1)).toContain(
+      "5h rolling: [███████████████████░] 97% left · 3% used",
+    );
   });
 
   it("accepts pi-better-grok's footer object", async () => {
@@ -518,7 +520,9 @@ describe("/usage", () => {
     await harness.command()?.("", harness.ctx);
 
     expect(harness.notifications.at(-1)?.split("\n")[0]).toBe("OpenCode Go usage");
-    expect(harness.notifications.at(-1)).toContain("5h rolling: 3% used · 97% left");
+    expect(harness.notifications.at(-1)).toContain(
+      "5h rolling: [███████████████████░] 97% left · 3% used",
+    );
     expect(harness.count()).toBe(2);
   });
 

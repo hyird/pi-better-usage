@@ -274,6 +274,7 @@ export function formatDetail(
   config: UsageConfig,
   credential: UsageCredential,
   now = Date.now(),
+  colorize?: (severity: UsageSeverity, text: string) => string,
 ): string {
   const account = config.showAccountLabel ? accountLabel(credential) : undefined;
   const lines = [
@@ -282,15 +283,19 @@ export function formatDetail(
   for (const key of config.windows) {
     const window = snapshot.windows[key];
     if (!window) continue;
-    const reset =
-      window.resetsAt != null
-        ? ` · resets in ${formatCountdown(window.resetsAt - now)} (${formatClock(window.resetsAt, now)})`
-        : "";
     const status = window.status === "ok" ? "" : ` · ${window.status}`;
-    const left = formatPercent(leftPercent(window.percentUsed));
+    const remaining = leftPercent(window.percentUsed);
+    const filled = Math.round(remaining / 5);
+    const meter = `[${"█".repeat(filled)}${"░".repeat(20 - filled)}] ${formatPercent(remaining)} left`;
+    const coloredMeter = colorize ? colorize(severityForLeftPercent(remaining), meter) : meter;
     lines.push(
-      `${window.label ?? WINDOW_NAMES[key]}: ${Math.round(window.percentUsed)}% used · ${left} left${reset}${status}`,
+      `${window.label ?? WINDOW_NAMES[key]}: ${coloredMeter} · ${Math.round(window.percentUsed)}% used${status}`,
     );
+    if (window.resetsAt != null) {
+      lines.push(
+        `  Resets: ${formatClock(window.resetsAt, now)} · in ${formatCountdown(window.resetsAt - now)}`,
+      );
+    }
   }
   lines.push(`Captured: ${formatClock(snapshot.capturedAt)}`);
   return lines.join("\n");

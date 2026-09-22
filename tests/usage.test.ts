@@ -356,8 +356,12 @@ describe("formatDetail", () => {
   it("reports used and left per window", () => {
     const detail = formatDetail(FULL, config(), CREDENTIAL, NOW);
     expect(detail).toContain("account: zhong");
-    expect(detail).toContain("5h rolling: 3% used · 97% left · resets in 2h3m (2026-09-22 14:03)");
-    expect(detail).toContain("month: 95% used · 5% left · resets in 20d0h (2026-10-12 12:00)");
+    expect(detail).toContain(
+      "5h rolling: [███████████████████░] 97% left · 3% used\n  Resets: 2026-09-22 14:03 · in 2h3m",
+    );
+    expect(detail).toContain(
+      "month: [█░░░░░░░░░░░░░░░░░░░] 5% left · 95% used\n  Resets: 2026-10-12 12:00 · in 20d0h",
+    );
   });
 
   it("omits the reset time when there is none", () => {
@@ -367,7 +371,7 @@ describe("formatDetail", () => {
       CREDENTIAL,
       NOW,
     );
-    expect(detail).toContain("week: 1% used · 99% left\n");
+    expect(detail).toContain("week: [████████████████████] 99% left · 1% used\n");
   });
 
   it("surfaces a non-ok status", () => {
@@ -377,6 +381,6 @@ describe("formatDetail", () => {
       CREDENTIAL,
       NOW,
     );
-    expect(detail).toContain("week: 100% used · 0% left · exhausted");
+    expect(detail).toContain("week: [░░░░░░░░░░░░░░░░░░░░] 0% left · 100% used · exhausted");
   });
 });
