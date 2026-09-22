@@ -1,0 +1,62 @@
+{
+  "name": "pi-better-opencode-go",
+  "version": "0.1.0",
+  "description": "OpenCode Go subscription usage for pi, styled after pi-better-grok: a coloured footer widget, footer modes, and pi-multiprovider (/multilogin) aware credentials.",
+  "keywords": [
+    "footer",
+    "opencode",
+    "opencode-go",
+    "pi",
+    "pi-extension",
+    "pi-package",
+    "usage",
+    "widget"
+  ],
+  "homepage": "https://github.com/hyird/pi-better-opencode-go#readme",
+  "bugs": {
+    "url": "https://github.com/hyird/pi-better-opencode-go/issues"
+  },
+  "license": "MIT",
+  "author": "hyird",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyird/pi-better-opencode-go.git"
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint --deny-warnings index.ts src/*.ts tests/*.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@earendil-works/pi-tui": "0.87.0",
+    "@types/node": "~22.19.0",
+    "oxfmt": "^0.47.0",
+    "oxlint": "^1.62.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
