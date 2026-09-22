@@ -41,8 +41,11 @@ pi install git:github.com/hyird/pi-better-opencode-go
 - A window whose status is not `ok` gets an ` !status` marker, so a broken window cannot hide
   behind a healthy percentage.
 - The line is truncated to the terminal width with a dim `...`.
-- While the first request is in flight — or after a failure — the widget shows `Go ?` instead of a
-  silent gap. `/go-usage` always carries the full error.
+- Like pi-better-openai/grok, no line is shown before the first successful fetch or after a
+  failed fetch. Errors are available through `/go-usage`, not as a persistent `Go ?` marker.
+- Switching away from `opencode-go` immediately removes the line. Pending requests are aborted
+  and invalidated, so late responses cannot restore old quota after a model/account switch or reload.
+- Refresh runs at startup, on model/account changes, and after each turn (subject to the cache TTL).
 
 ## Credentials
 
@@ -76,29 +79,34 @@ ignored, so a broken config never breaks the reading.
 
 ```json
 {
-  "enabled": true,
-  "windows": ["rolling", "weekly", "monthly"],
-  "refreshIntervalMs": 60000,
-  "onlyOnOpencodeModel": true,
-  "showAccountLabel": true,
-  "footerMode": "widget"
+  "usage": {
+    "enabled": true,
+    "refreshIntervalMs": 60000,
+    "windows": ["rolling", "weekly", "monthly"],
+    "showAccountLabel": true
+  },
+  "footer": { "mode": "status" }
 }
 ```
 
-| Key                   | Default    | Meaning                                                                              |
-| --------------------- | ---------- | ------------------------------------------------------------------------------------ |
-| `enabled`             | `true`     | Master switch for display; `/go-usage` still queries on demand.                      |
-| `windows`             | all three  | Which windows to show, re-ordered to endpoint order. An empty list hides the line.   |
-| `refreshIntervalMs`   | `60000`    | Poll interval, clamped to 15s…1h. The cache is also refreshed after each agent turn. |
-| `onlyOnOpencodeModel` | `true`     | Show the reading only while the selected model belongs to `opencode-go`.             |
-| `showAccountLabel`    | `true`     | Append the active pooled account label.                                              |
-| `footerMode`          | `"widget"` | Where the reading renders — see below.                                               |
+| Key                   | Default    | Meaning                                                                                  |
+| --------------------- | ---------- | ---------------------------------------------------------------------------------------- |
+| `enabled`             | `true`     | Master switch for display; `/go-usage` still queries on demand.                          |
+| `windows`             | all three  | Which windows to show, re-ordered to endpoint order. An empty list hides the line.       |
+| `refreshIntervalMs`   | `60000`    | Poll interval, clamped to 15s…1h. The cache is also refreshed after each agent turn.     |
+| `onlyOnOpencodeModel` | `true`     | Legacy field; provider isolation is now always enforced, just like the better-\* series. |
+| `showAccountLabel`    | `true`     | Append the active pooled account label.                                                  |
+| `footerMode`          | `"widget"` | Where the reading renders — see below.                                                   |
 
 | `footerMode`         | Where the reading renders                                                                  |
 | -------------------- | ------------------------------------------------------------------------------------------ |
 | `widget` _(default)_ | Coloured line in the widget area below the editor — the same place pi-better-grok renders. |
 | `status`             | Plain text in Pi's own footer, next to the other extension statuses.                       |
 | `off`                | Hidden. `/go-usage` still works.                                                           |
+
+The `usage` section accepts the display fields above; legacy flat fields remain supported.
+Like the other better-\* plugins, turning off a subscription-only check never enables a different
+provider's quota. OpenCode Go authenticates subscriptions with API keys, so no OAuth-only gate is used.
 
 pi-better-grok's own config shape is accepted too: `{"footer": {"mode": "status"}}` maps to `widget`
 so a copied grok config looks identical, and grok's `replace` — a whole custom footer this extension

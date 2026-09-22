@@ -23,7 +23,7 @@ export type UsageConfig = {
   /** Windows shown in the widget and in the detail report. */
   windows: WindowKey[];
   refreshIntervalMs: number;
-  /** Only show usage while the selected model belongs to OpenCode Go. */
+  /** Legacy setting. Provider isolation is always enforced, like better-openai/grok. */
   onlyOnOpencodeModel: boolean;
   /** Append the active pooled account label to the reading. */
   showAccountLabel: boolean;
@@ -80,7 +80,13 @@ function parseWindowList(value: unknown): WindowKey[] | undefined {
 export function normalizeConfig(raw: unknown, base: UsageConfig = DEFAULT_CONFIG): UsageConfig {
   const config: UsageConfig = { ...base, windows: [...base.windows] };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return config;
-  const input = raw as Record<string, unknown>;
+  const root = raw as Record<string, unknown>;
+  // Accept the same usage section as pi-better-openai/grok, retaining flat aliases.
+  const usage = root.usage;
+  const input =
+    usage && typeof usage === "object" && !Array.isArray(usage)
+      ? { ...root, ...(usage as Record<string, unknown>) }
+      : root;
   if (typeof input.enabled === "boolean") config.enabled = input.enabled;
   const windows = parseWindowList(input.windows);
   if (windows) config.windows = windows;

@@ -105,6 +105,16 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
   let unsubscribeAccount: (() => void) | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let refreshing = false;
+  // Invalidate pending work on model/account/session changes.
+  let generation = 0;
+  let activeProvider: string | undefined;
+  let refreshAbort: AbortController | undefined;
+  const invalidateRefresh = (): void => {
+    generation += 1;
+    refreshAbort?.abort();
+    refreshAbort = undefined;
+    refreshing = false;
+  };
   /** Latest event ctx, so a late multilogin announcement can still refresh. */
   let lastCtx: ExtensionContext | undefined;
 
@@ -142,7 +152,7 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
   };
 
   const eligible = (ctx: ExtensionContext): boolean =>
-    config.enabled && (!config.onlyOnOpencodeModel || isOpencodeGoModel(ctx));
+    config.enabled && (activeProvider ?? ctx.model?.provider) === PROVIDER_ID;
 
   const render = (ctx: ExtensionContext): void => {
     if (!eligible(ctx) || config.footerMode === "off") {
@@ -151,12 +161,12 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
       return;
     }
 
-    const segments = cache
-      ? usageSegments(cache.snapshot, config, cache.credential.label, now())
-      : [];
-    let parts: UsageSegment[] | undefined = segments.length > 0 ? segments : undefined;
-    // Keep a failed fetch visible as a terse marker instead of a silent gap.
-    if (!parts && lastError) parts = [{ text: "Go ?", severity: "muted" }];
+    // Match the better-* series: no placeholder or stale quota after a failure.
+    const segments =
+      cache && !lastError
+        ? usageSegments(cache.snapshot, config, cache.credential.label, now())
+        : [];
+    const parts: UsageSegment[] | undefined = segments.length > 0 ? segments : undefined;
 
     // Non-terminal modes have no widget area; they fall back to the status line.
     if (config.footerMode === "widget" && hasTerminalUI(ctx)) {
@@ -183,8 +193,12 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
     if (!mode.force && cache && now() - cache.fetchedAt < config.refreshIntervalMs) return;
     if (refreshing) return;
     refreshing = true;
+    const requestGeneration = generation;
+    refreshAbort = new AbortController();
+    const signal = refreshAbort.signal;
     try {
       const credential = await resolveUsageCredential(ctx, { service: () => service, env });
+      if (requestGeneration !== generation) return;
       if (!credential) {
         cache = undefined;
         lastError = `No OpenCode Go credential. Use /login ${PROVIDER_ID} or /multilogin ${PROVIDER_ID}.`;
@@ -193,12 +207,18 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
       }
       // A pooled account switch changes the quota owner; never reuse its reading.
       if (cache && cache.credential.fingerprint !== credential.fingerprint) cache = undefined;
-      const snapshot = await fetchUsage(credential, { fetchImpl: options.fetchImpl, now: now() });
+      const snapshot = await fetchUsage(credential, {
+        signal,
+        fetchImpl: options.fetchImpl,
+        now: now(),
+      });
+      if (requestGeneration !== generation) return;
       cache = { credential, snapshot, fetchedAt: now() };
       lastError = undefined;
       authBlockedUntil = 0;
       render(ctx);
     } catch (error) {
+      if (requestGeneration !== generation) return;
       const usageError =
         error instanceof UsageError
           ? error
@@ -207,7 +227,10 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
       if (usageError.kind === "auth") authBlockedUntil = now() + AUTH_FAILURE_COOLDOWN_MS;
       render(ctx);
     } finally {
-      refreshing = false;
+      if (requestGeneration === generation) {
+        refreshing = false;
+        refreshAbort = undefined;
+      }
     }
   };
 
@@ -219,9 +242,11 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
     try {
       unsubscribeAccount = candidate.onActiveAccountChanged(PROVIDER_ID, (event) => {
         // Drop the previous account's numbers, then re-read for the new one.
+        invalidateRefresh();
         cache = undefined;
+        lastError = undefined;
         authBlockedUntil = 0;
-        const ctx = event?.ctx ?? lastCtx;
+        const ctx = lastCtx ?? event?.ctx;
         if (!ctx) return;
         render(ctx);
         void refresh(ctx, { force: true }).catch(() => undefined);
@@ -232,6 +257,10 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
     // The announcement can arrive after session_start, so the first reading may
     // have used Pi's own key. Re-read now that the active account is known.
     if (lastCtx) {
+      invalidateRefresh();
+      cache = undefined;
+      lastError = undefined;
+      render(lastCtx);
       authBlockedUntil = 0;
       void refresh(lastCtx, { force: true }).catch(() => undefined);
     }
@@ -247,37 +276,56 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
   });
 
   pi.on("session_start", (_event, ctx) => {
+    invalidateRefresh();
     config = readConfig(env, ctx.cwd);
     lastCtx = ctx;
+    activeProvider = ctx.model?.provider;
     lastStatusText = undefined;
+    render(ctx);
     stopTimer();
     timer = setInterval(() => {
-      void refresh(ctx).catch(() => undefined);
+      if (lastCtx) void refresh(lastCtx).catch(() => undefined);
     }, config.refreshIntervalMs);
     timer.unref?.();
     void refresh(ctx, { force: true }).catch(() => undefined);
   });
 
-  pi.on("model_select", (_event, ctx) => {
+  pi.on("model_select", (event, ctx) => {
+    invalidateRefresh();
     lastCtx = ctx;
-    // Only fetch when the new model can show a reading; otherwise just re-render.
+    activeProvider = event.model?.provider ?? ctx.model?.provider;
+    // Clear immediately, before any asynchronous credential or usage request.
+    render(ctx);
     if (eligible(ctx)) void refresh(ctx, { force: true }).catch(() => undefined);
-    else render(ctx);
   });
 
-  pi.on("agent_end", (_event, ctx) => {
+  const updateDisplay = (_event: unknown, ctx: ExtensionContext): void => {
     lastCtx = ctx;
-    // Cheap: refresh() returns immediately while the cache is still fresh.
+    render(ctx);
+  };
+  pi.on("agent_start", updateDisplay);
+  pi.on("agent_end", updateDisplay);
+  pi.on("session_compact", updateDisplay);
+  pi.on("session_tree", updateDisplay);
+  pi.on("turn_end", (_event, ctx) => {
+    updateDisplay(_event, ctx);
+    // Match better-openai: refresh after each turn, subject to the cache TTL.
     void refresh(ctx).catch(() => undefined);
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
+    invalidateRefresh();
+    setStatus(ctx, undefined);
+    setStatusWidget(ctx, undefined);
     stopTimer();
     unsubscribeAccount?.();
     unsubscribeAccount = undefined;
     service = undefined;
     lastCtx = undefined;
     cache = undefined;
+    lastError = undefined;
+    authBlockedUntil = 0;
+    activeProvider = undefined;
     lastStatusText = undefined;
   });
 
@@ -288,7 +336,7 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
       // The command always re-reads, even off an OpenCode Go model.
       await refresh(ctx, { force: true, ignoreEligibility: true });
       const lines: string[] = [];
-      if (cache) {
+      if (cache && !lastError) {
         lines.push(formatDetail(cache.snapshot, config, cache.credential));
       } else {
         lines.push(`Usage unavailable: ${lastError ?? "not fetched yet"}`);
@@ -301,7 +349,7 @@ export function registerOpencodeGoUsage(pi: ExtensionAPI, options: RegisterOptio
         );
       }
       if (!explicit) lines.push(`(/${COMMAND_NAME} refresh forces an immediate request)`);
-      ctx.ui.notify(lines.join("\n"), cache ? "info" : "warning");
+      ctx.ui.notify(lines.join("\n"), cache && !lastError ? "info" : "warning");
     },
   });
 }

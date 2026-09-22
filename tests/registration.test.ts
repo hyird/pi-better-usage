@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerOpencodeGoUsage } from "../index.ts";
 import { globalConfigPath } from "../src/paths.ts";
 import { MULTIPROVIDER_SERVICE_EVENT, type MultiproviderService } from "../src/multiprovider.ts";
@@ -11,8 +11,11 @@ import type { FetchLike } from "../src/usage.ts";
 const NOW = Date.parse("2026-09-22T12:00:00Z");
 
 const tempDirs: string[] = [];
+const cleanups: (() => void)[] = [];
 
 afterEach(() => {
+  for (const cleanup of cleanups.splice(0)) cleanup();
+  vi.useRealTimers();
   tempDirs.length = 0;
 });
 
@@ -46,6 +49,7 @@ function makeHarness(
     mode?: string;
     hasUI?: boolean;
     registryKey?: string | null;
+    now?: () => number;
   } = {},
 ) {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-better-opencode-go-reg-"));
@@ -107,7 +111,10 @@ function makeHarness(
       };
     });
 
-  registerOpencodeGoUsage(pi, { env, now: () => NOW, fetchImpl });
+  registerOpencodeGoUsage(pi, { env, now: options.now ?? (() => NOW), fetchImpl });
+  cleanups.push(() => {
+    handlers.get("session_shutdown")?.({}, ctx);
+  });
 
   return {
     agentDir,
@@ -168,12 +175,12 @@ describe("widget placement", () => {
     for (const widget of harness.widgets) expect(widget.content).toBeUndefined();
   });
 
-  it("still fetches when onlyOnOpencodeModel is off", async () => {
+  it("never shows another provider's quota, even with the legacy gate disabled", async () => {
     const harness = makeHarness({ provider: "xai", config: { onlyOnOpencodeModel: false } });
     await settle(harness);
 
-    expect(harness.count()).toBe(1);
-    expect(harness.widgets.at(-1)?.content).toBeTypeOf("function");
+    expect(harness.count()).toBe(0);
+    expect(harness.lastWidget()).toBeUndefined();
   });
 
   it("falls back to the status line outside the TUI", async () => {
@@ -183,6 +190,156 @@ describe("widget placement", () => {
     expect(harness.lastStatus()).toBe(
       "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 2:03 PM · pi",
     );
+  });
+});
+
+describe("model and session transitions", () => {
+  const switchTo = (harness: Harness, provider: string) => {
+    // Separate contexts reproduce callbacks holding a snapshot of the old model.
+    const ctx = { ...harness.ctx, model: { ...harness.ctx.model, provider } } as ExtensionContext;
+    harness.handlers.get("model_select")?.({ model: ctx.model }, ctx);
+    return ctx;
+  };
+
+  it("clears immediately on a provider switch and restores below the editor on return", async () => {
+    const harness = makeHarness();
+    await settle(harness);
+    switchTo(harness, "openai-codex");
+    expect(harness.lastWidget()).toBeUndefined();
+    await flush();
+    expect(harness.count()).toBe(1);
+    switchTo(harness, "opencode-go");
+    await flush();
+    expect(renderWidget(harness.lastWidget())).toContain("97%");
+    expect(harness.widgets.at(-1)?.options).toEqual({ placement: "belowEditor" });
+  });
+
+  it("polls using the latest model context and stays quiet on other providers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const harness = makeHarness({ now: () => Date.now() });
+    harness.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.count()).toBe(1);
+    switchTo(harness, "xai");
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(harness.count()).toBe(1);
+    expect(harness.lastWidget()).toBeUndefined();
+    switchTo(harness, "opencode-go");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.count()).toBe(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.count()).toBe(3);
+    expect(harness.lastWidget()).toBeTypeOf("function");
+  });
+
+  it("uses the selected event model even if ctx still has the old model", async () => {
+    const harness = makeHarness();
+    await settle(harness);
+    harness.handlers.get("model_select")?.({ model: { provider: "xai" } }, harness.ctx);
+    expect(harness.lastWidget()).toBeUndefined();
+    await flush();
+    expect(harness.count()).toBe(1);
+  });
+
+  for (const outcome of ["success", "failure"] as const) {
+    it(`ignores late ${outcome} after switching providers`, async () => {
+      let finish!: () => void;
+      let signal: AbortSignal | undefined;
+      const harness = makeHarness({
+        fetchImpl: (_url, init) => {
+          signal = init?.signal;
+          return new Promise((resolve, reject) => {
+            finish = () =>
+              outcome === "failure"
+                ? reject(new Error("late failure"))
+                : resolve({
+                    ok: true,
+                    status: 200,
+                    headers: { get: () => null },
+                    json: async () => okPayload(),
+                  });
+          });
+        },
+      });
+      await settle(harness);
+      switchTo(harness, "xai");
+      expect(signal?.aborted).toBe(true);
+      const updates = harness.widgets.length;
+      finish();
+      await flush();
+      expect(harness.lastWidget()).toBeUndefined();
+      expect(harness.widgets.length).toBe(updates);
+    });
+  }
+
+  it("does not let an older request overwrite the reading after switching back", async () => {
+    const pending: (() => void)[] = [];
+    let calls = 0;
+    const harness = makeHarness({
+      fetchImpl: async () => {
+        const percent = ++calls === 1 ? 3 : 80;
+        await new Promise<void>((resolve) => pending.push(resolve));
+        const payload = okPayload();
+        payload.usage.rolling.percent = percent;
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => payload };
+      },
+    });
+    await settle(harness);
+    switchTo(harness, "xai");
+    switchTo(harness, "opencode-go");
+    await flush();
+    expect(calls).toBe(2);
+    pending[1]!();
+    await flush();
+    expect(renderWidget(harness.lastWidget())).toContain("20%");
+    pending[0]!();
+    await flush();
+    expect(renderWidget(harness.lastWidget())).toContain("20%");
+  });
+
+  it("prevents pending work from restoring a widget after shutdown", async () => {
+    let finish!: () => void;
+    const harness = makeHarness({
+      fetchImpl: async () => {
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => okPayload(),
+        };
+      },
+    });
+    await settle(harness);
+    harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+    const updates = harness.widgets.length;
+    finish();
+    await flush();
+    expect(harness.lastWidget()).toBeUndefined();
+    expect(harness.widgets.length).toBe(updates);
+  });
+
+  it("hides cached quota on an error rather than leaving stale usage on screen", async () => {
+    let calls = 0;
+    const harness = makeHarness({
+      fetchImpl: async () => {
+        if (++calls > 1) throw new Error("network unavailable");
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => okPayload(),
+        };
+      },
+    });
+    await settle(harness);
+    expect(harness.lastWidget()).toBeTypeOf("function");
+    switchTo(harness, "opencode-go");
+    await flush();
+    expect(harness.lastWidget()).toBeUndefined();
   });
 });
 
@@ -222,7 +379,7 @@ describe("refresh policy", () => {
     await settle(harness);
     expect(harness.count()).toBe(1);
 
-    await harness.handlers.get("agent_end")?.({}, harness.ctx);
+    await harness.handlers.get("turn_end")?.({}, harness.ctx);
     await flush();
     expect(harness.count()).toBe(1);
 
@@ -241,11 +398,11 @@ describe("refresh policy", () => {
     });
     await settle(harness);
     expect(calls).toBe(1);
-    expect(renderWidget(harness.lastWidget())).toBe("{dim|Go ?}");
+    expect(harness.lastWidget()).toBeUndefined();
 
     // Automatic refresh stays quiet until the cooldown expires.
     for (let i = 0; i < 3; i += 1) {
-      await harness.handlers.get("agent_end")?.({}, harness.ctx);
+      await harness.handlers.get("turn_end")?.({}, harness.ctx);
       await flush();
     }
     expect(calls).toBe(1);
@@ -268,7 +425,7 @@ describe("refresh policy", () => {
     await settle(harness);
 
     expect(calls).toBe(0);
-    expect(renderWidget(harness.lastWidget())).toBe("{dim|Go ?}");
+    expect(harness.lastWidget()).toBeUndefined();
 
     await harness.command()?.("", harness.ctx);
     expect(harness.notifications.at(-1)).toContain("No OpenCode Go credential");
@@ -342,6 +499,7 @@ describe("multilogin accounts", () => {
 
     harness.handlers.get("session_shutdown")?.({}, harness.ctx);
     expect(harness.statuses.at(-1)).toBeUndefined();
+    expect(harness.lastWidget()).toBeUndefined();
   });
 });
 

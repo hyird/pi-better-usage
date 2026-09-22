@@ -81,6 +81,16 @@ describe("normalizeConfig", () => {
     expect(normalizeConfig({ showAccountLabel: "no" }).showAccountLabel).toBe(true);
   });
 
+  it("accepts the better-* usage and footer sections", () => {
+    const config = normalizeConfig({
+      usage: { enabled: false, refreshIntervalMs: 120_000 },
+      footer: { mode: "status" },
+    });
+    expect(config.enabled).toBe(false);
+    expect(config.refreshIntervalMs).toBe(120_000);
+    expect(config.footerMode).toBe("widget");
+  });
+
   it("reads the flat footerMode key", () => {
     expect(normalizeConfig({ footerMode: "status" }).footerMode).toBe("status");
     expect(normalizeConfig({ footerMode: "off" }).footerMode).toBe("off");
