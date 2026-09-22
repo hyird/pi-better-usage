@@ -12,8 +12,10 @@ import { USAGE_PROVIDERS, type UsageProvider } from "./src/providers.ts";
 import {
   isMultiproviderService,
   MULTIPROVIDER_SERVICE_EVENT,
+  ACCOUNTS_SERVICE_EVENT,
   type MultiproviderService,
 } from "./src/multiprovider.ts";
+import { reportSavedAccounts } from "./src/account-report.ts";
 import {
   accountLabel,
   formatDetail,
@@ -291,6 +293,9 @@ export function registerProviderUsage(
   pi.events.on(MULTIPROVIDER_SERVICE_EVENT, (value: unknown) => {
     if (isMultiproviderService(value)) attachService(value);
   });
+  pi.events.on(ACCOUNTS_SERVICE_EVENT, (value: unknown) => {
+    if (isMultiproviderService(value)) attachService(value);
+  });
 
   pi.on("session_start", (_event, ctx) => {
     invalidateRefresh();
@@ -380,9 +385,37 @@ export function registerProviderUsage(
 
 export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): void {
   const reports = USAGE_PROVIDERS.map((provider) => registerProviderUsage(pi, provider, options));
+  let accountService: MultiproviderService | undefined;
+  pi.events.on(ACCOUNTS_SERVICE_EVENT, (value: unknown) => {
+    if (isMultiproviderService(value) && value.listAccounts && value.resolveAccountAuth)
+      accountService = value;
+  });
+  pi.events.emit("pi-accounts:request-service", undefined);
   pi.registerCommand("usage", {
-    description: "Show all OpenAI, Grok and OpenCode subscription usage",
+    description: "Show usage for every saved account, with labels and current-account markers",
     handler: async (_args: string, ctx: ExtensionContext) => {
+      if (accountService?.listAccounts && accountService.resolveAccountAuth) {
+        try {
+          const accounts = await accountService.listAccounts();
+          if (accounts.length) {
+            const config = readConfig(options.env ?? process.env, ctx.cwd);
+            ctx.ui.notify(
+              await reportSavedAccounts(ctx, accountService, accounts, config, {
+                ...options,
+                now: options.now?.() ?? Date.now(),
+              }),
+              "info",
+            );
+            return;
+          }
+        } catch {
+          ctx.ui.notify(
+            "Could not read saved accounts. Check account storage and try again.",
+            "error",
+          );
+          return;
+        }
+      }
       const details = await Promise.all(reports.map((report) => report(ctx)));
       ctx.ui.notify(details.join("\n\n"), "info");
     },

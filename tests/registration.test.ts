@@ -5,7 +5,11 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerProviderUsage } from "../index.ts";
 import { globalConfigPath } from "../src/paths.ts";
-import { MULTIPROVIDER_SERVICE_EVENT, type MultiproviderService } from "../src/multiprovider.ts";
+import {
+  ACCOUNTS_SERVICE_EVENT,
+  MULTIPROVIDER_SERVICE_EVENT,
+  type MultiproviderService,
+} from "../src/multiprovider.ts";
 import { USAGE_PROVIDERS } from "../src/providers.ts";
 import type { FetchLike } from "../src/usage.ts";
 
@@ -534,31 +538,34 @@ describe("multilogin accounts", () => {
     expect(listener).toBeTypeOf("function");
   });
 
-  it("drops the previous account's reading when the account switches", async () => {
-    const harness = makeHarness();
-    await settle(harness);
+  it.each([MULTIPROVIDER_SERVICE_EVENT, ACCOUNTS_SERVICE_EVENT])(
+    "drops old quota and refreshes the label on %s",
+    async (serviceEvent) => {
+      const harness = makeHarness();
+      await settle(harness);
 
-    let listener: ((event: { ctx?: ExtensionContext }) => void) | undefined;
-    let label = "first";
-    harness.eventListeners.get(MULTIPROVIDER_SERVICE_EVENT)?.(
-      pooledService(
-        async () => ({ accessToken: `key-${label}`, label }),
-        (event) => {
-          listener = event as (event: { ctx?: ExtensionContext }) => void;
-        },
-      ),
-    );
-    for (let i = 0; i < 20; i += 1) await Promise.resolve();
-    expect(renderWidget(harness.lastWidget())).toContain("· first");
+      let listener: ((event: { ctx?: ExtensionContext }) => void) | undefined;
+      let label = "first";
+      harness.eventListeners.get(serviceEvent)?.(
+        pooledService(
+          async () => ({ accessToken: `key-${label}`, label }),
+          (event) => {
+            listener = event as (event: { ctx?: ExtensionContext }) => void;
+          },
+        ),
+      );
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      expect(renderWidget(harness.lastWidget())).toContain("· first");
 
-    label = "second";
-    listener?.({ ctx: harness.ctx });
-    // The previous account's numbers must not survive the switch.
-    expect(harness.lastWidget()).toBeUndefined();
+      label = "second";
+      listener?.({ ctx: harness.ctx });
+      // The previous account's numbers must not survive the switch.
+      expect(harness.lastWidget()).toBeUndefined();
 
-    await flush();
-    expect(renderWidget(harness.lastWidget())).toContain("· second");
-  });
+      await flush();
+      expect(renderWidget(harness.lastWidget())).toContain("· second");
+    },
+  );
 
   it("clears everything on shutdown", async () => {
     const harness = makeHarness();

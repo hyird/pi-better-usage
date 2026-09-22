@@ -48,7 +48,7 @@ function harness(disabled = false, fetchOverride?: FetchLike) {
     },
   } as unknown as ExtensionContext;
   const pi = {
-    events: { on() {} },
+    events: { on() {}, emit() {} },
     on(name: string, fn: (event: unknown, ctx: ExtensionContext) => unknown) {
       handlers.set(name, [...(handlers.get(name) ?? []), fn]);
     },

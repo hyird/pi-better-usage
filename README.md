@@ -22,6 +22,10 @@ pi install git:github.com/hyird/pi-better-usage
 
 Run `/reload` inside Pi, then `/usage`.
 
+When [hyird/pi-multiprovider](https://github.com/hyird/pi-multiprovider) is installed, `/usage` reports **every saved account**, with its label and a `[Current]` marker based on Pi's `auth.json`. A current login missing from the saved pool appears separately as `Unmanaged [Current]`. Unsupported providers or failed accounts get their own message without hiding the other results. Background display shows the current account only; account switches immediately clear old quota and refresh its label and usage.
+
+Queries do not switch accounts. Inactive OAuth refreshes stay in the saved account pool. Update both extensions to enable this integration.
+
 To update:
 
 ```bash

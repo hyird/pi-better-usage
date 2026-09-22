@@ -7,6 +7,12 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
  * its standalone behavior.
  */
 export const MULTIPROVIDER_SERVICE_EVENT = "pi-multiprovider:service";
+export const ACCOUNTS_SERVICE_EVENT = "pi-accounts:service";
+
+export type SavedUsageAccount = MultiproviderActiveAccount & {
+  providerId: string;
+  active: boolean;
+};
 
 export type MultiproviderActiveAccount = { id: string; label: string; authKind: string };
 
@@ -24,6 +30,12 @@ export type MultiproviderServiceContext = Pick<
 >;
 
 export type MultiproviderService = {
+  listAccounts?(): Promise<SavedUsageAccount[]>;
+  resolveAccountAuth?(
+    id: string,
+    ctx: MultiproviderServiceContext,
+    signal?: AbortSignal,
+  ): Promise<MultiproviderAccountAuth | undefined>;
   getActiveAccount(
     providerId: string,
     ctx: MultiproviderServiceContext,
