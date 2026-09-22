@@ -286,10 +286,10 @@ export function formatDetail(
     const status = window.status === "ok" ? "" : ` · ${window.status}`;
     const remaining = leftPercent(window.percentUsed);
     const filled = Math.round(remaining / 5);
-    const meter = `[${"█".repeat(filled)}${"░".repeat(20 - filled)}] ${formatPercent(remaining)} left`;
+    const meter = `[${"█".repeat(filled)}${"░".repeat(20 - filled)}] ${formatPercent(remaining).padStart(4)} left`;
     const coloredMeter = colorize ? colorize(severityForLeftPercent(remaining), meter) : meter;
     lines.push(
-      `${window.label ?? WINDOW_NAMES[key]}: ${coloredMeter} · ${Math.round(window.percentUsed)}% used${status}`,
+      `${`${window.label ?? WINDOW_NAMES[key]}:`.padEnd(12)}${coloredMeter} · ${`${Math.round(window.percentUsed)}%`.padStart(4)} used${status}`,
     );
     if (window.resetsAt != null) {
       lines.push(

@@ -40,9 +40,9 @@ pi install F:/Workspace/windows/pi-better-usage
 
 ```text
 OpenAI Codex usage
-5h rolling: [███████████████░░░░░] 75% left · 25% used
+5h rolling: [███████████████░░░░░]  75% left ·  25% used
   Resets: 9/22 23:33 · in 2h3m
-week: [████████████░░░░░░░░] 60% left · 40% used
+week:       [████████████░░░░░░░░]  60% left ·  40% used
   Resets: 9/27 21:30 · in 5d0h
 Captured: 9/22 21:30
 ```

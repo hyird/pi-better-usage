@@ -371,7 +371,7 @@ describe("footer modes", () => {
 
     await harness.command()?.("", harness.ctx);
     expect(harness.notifications.at(-1)).toContain(
-      "5h rolling: [███████████████████░] 97% left · 3% used",
+      "5h rolling: [███████████████████░]  97% left ·   3% used",
     );
   });
 
@@ -521,7 +521,7 @@ describe("/usage", () => {
 
     expect(harness.notifications.at(-1)?.split("\n")[0]).toBe("OpenCode Go usage");
     expect(harness.notifications.at(-1)).toContain(
-      "5h rolling: [███████████████████░] 97% left · 3% used",
+      "5h rolling: [███████████████████░]  97% left ·   3% used",
     );
     expect(harness.count()).toBe(2);
   });

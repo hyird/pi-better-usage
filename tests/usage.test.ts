@@ -357,10 +357,10 @@ describe("formatDetail", () => {
     const detail = formatDetail(FULL, config(), CREDENTIAL, NOW);
     expect(detail).toContain("account: zhong");
     expect(detail).toContain(
-      "5h rolling: [███████████████████░] 97% left · 3% used\n  Resets: 9/22 14:03 · in 2h3m",
+      "5h rolling: [███████████████████░]  97% left ·   3% used\n  Resets: 9/22 14:03 · in 2h3m",
     );
     expect(detail).toContain(
-      "month: [█░░░░░░░░░░░░░░░░░░░] 5% left · 95% used\n  Resets: 10/12 12:00 · in 20d0h",
+      "month:      [█░░░░░░░░░░░░░░░░░░░]   5% left ·  95% used\n  Resets: 10/12 12:00 · in 20d0h",
     );
   });
 
@@ -371,7 +371,7 @@ describe("formatDetail", () => {
       CREDENTIAL,
       NOW,
     );
-    expect(detail).toContain("week: [████████████████████] 99% left · 1% used\n");
+    expect(detail).toContain("week:       [████████████████████]  99% left ·   1% used\n");
   });
 
   it("surfaces a non-ok status", () => {
@@ -381,6 +381,8 @@ describe("formatDetail", () => {
       CREDENTIAL,
       NOW,
     );
-    expect(detail).toContain("week: [░░░░░░░░░░░░░░░░░░░░] 0% left · 100% used · exhausted");
+    expect(detail).toContain(
+      "week:       [░░░░░░░░░░░░░░░░░░░░]   0% left · 100% used · exhausted",
+    );
   });
 });
