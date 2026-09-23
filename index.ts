@@ -403,6 +403,10 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
               await reportSavedAccounts(ctx, accountService, accounts, config, {
                 ...options,
                 now: options.now?.() ?? Date.now(),
+                colorize:
+                  hasTerminalUI(ctx) && ctx.ui.theme
+                    ? (severity, text) => ctx.ui.theme.fg(SEVERITY_COLORS[severity], text)
+                    : undefined,
               }),
               "info",
             );
