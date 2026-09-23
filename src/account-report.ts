@@ -66,8 +66,14 @@ export async function reportSavedAccounts(
           now: options.now,
           modelId: ctx.model?.provider === account.providerId ? ctx.model.id : undefined,
         });
-        results[index] =
-          `${title}\n${formatDetail(snapshot, { ...config, showAccountLabel: false }, credential, options.now, options.colorize)}`;
+        const details = formatDetail(
+          snapshot,
+          { ...config, showAccountLabel: false },
+          credential,
+          options.now,
+          options.colorize,
+        ).split("\n");
+        results[index] = `${title} · ${details.shift()}\n${details.join("\n")}`;
       } catch {
         results[index] =
           `${title}\nUsage unavailable. The account may need to sign in again; other accounts are unaffected.`;
