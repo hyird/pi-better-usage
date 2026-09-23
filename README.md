@@ -17,10 +17,12 @@ The extension tracks subscription quota. OpenAI and xAI API spending, and OpenCo
 ## Install
 
 ```bash
-pi install git:github.com/hyird/pi-better-usage
+pi install npm:pi-better-usage
 ```
 
 Run `/reload` inside Pi, then `/usage`.
+
+To install directly from Git instead, run `pi install git:github.com/hyird/pi-better-usage`.
 
 When [hyird/pi-multiprovider](https://github.com/hyird/pi-multiprovider) is installed, `/usage` reports **every saved account**, with its label and a `[Current]` marker based on Pi's `auth.json`. A current login missing from the saved pool appears separately as `Unmanaged [Current]`. Unsupported providers or failed accounts get their own message without hiding the other results. Background display shows the current account only; account switches immediately clear old quota and refresh its label and usage.
 
@@ -29,10 +31,11 @@ Queries do not switch accounts. Inactive OAuth refreshes stay in the saved accou
 To update:
 
 ```bash
-pi update git:github.com/hyird/pi-better-usage
+pi update npm:pi-better-usage
 ```
 
 Run `/reload` again to load the update.
+If you installed from Git, run `pi update git:github.com/hyird/pi-better-usage` instead.
 
 ## Usage
 
