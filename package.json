@@ -1,6 +1,6 @@
 {
   "name": "pi-better-usage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenAI Codex, Grok and OpenCode Go subscription usage for pi: remaining quota, reset times and account-aware footer.",
   "keywords": [
     "codex",
