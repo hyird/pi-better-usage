@@ -15,6 +15,7 @@ import {
   MULTIPROVIDER_SERVICE_EVENT,
   ACCOUNTS_SERVICE_EVENT,
   type MultiproviderService,
+  type SavedUsageAccount,
 } from "./src/multiprovider.ts";
 import { reportSavedAccounts } from "./src/account-report.ts";
 import {
@@ -368,7 +369,13 @@ export function registerProviderUsage(
   });
 
   const report = async (ctx: ExtensionContext): Promise<string> => {
-    await refresh(ctx, { force: true, ignoreEligibility: true });
+    const scope = scopeFor(ctx.model?.provider, ctx.model?.id);
+    if (cache?.scope === scope && !lastError) {
+      if (now() - cache.fetchedAt >= config.refreshIntervalMs)
+        void refresh(ctx, { ignoreEligibility: true }).catch(() => undefined);
+    } else {
+      await refresh(ctx, { force: true, ignoreEligibility: true });
+    }
     return cache && !lastError
       ? formatDetail(
           cache.snapshot,
@@ -387,11 +394,138 @@ export function registerProviderUsage(
 export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): void {
   const reports = USAGE_PROVIDERS.map((provider) => registerProviderUsage(pi, provider, options));
   let accountService: MultiproviderService | undefined;
+  let reportCtx: ExtensionContext | undefined;
+  let reportTimer: ReturnType<typeof setInterval> | undefined;
+  let reportGeneration = 0;
+  let reportPending: Promise<void> | undefined;
+  let savedCache: { roster: string; text: string; fetchedAt: number } | undefined;
+  let accountUnsubscribers: Array<() => void> = [];
+  const now = options.now ?? (() => Date.now());
+  const rosterKey = (accounts: SavedUsageAccount[], ctx: ExtensionContext) =>
+    JSON.stringify([
+      ctx.model?.provider === "openai-codex" && ctx.model.id === "gpt-5.3-codex-spark"
+        ? "spark"
+        : "default",
+      ...accounts.map(({ id, providerId, label, authKind, active }) => [
+        id,
+        providerId,
+        label,
+        authKind,
+        active,
+      ]),
+    ]);
+  const configFor = (ctx: ExtensionContext) => readConfig(options.env ?? process.env, ctx.cwd);
+  const reportOptions = (ctx: ExtensionContext) => ({
+    ...options,
+    now: now(),
+    colorize:
+      hasTerminalUI(ctx) && ctx.ui.theme
+        ? (severity: UsageSegment["severity"], text: string) =>
+            ctx.ui.theme.fg(SEVERITY_COLORS[severity], text)
+        : undefined,
+    colorHeading:
+      hasTerminalUI(ctx) && ctx.ui.theme
+        ? (text: string) => ctx.ui.theme.fg("text", text)
+        : undefined,
+  });
+  const refreshSaved = async (
+    ctx: ExtensionContext,
+    knownAccounts?: SavedUsageAccount[],
+  ): Promise<void> => {
+    const service = accountService;
+    if (!service?.listAccounts || !service.resolveAccountAuth) return;
+    let accounts = knownAccounts;
+    if (reportPending) {
+      await reportPending.catch(() => undefined);
+      accounts ??= await service.listAccounts();
+      if (
+        savedCache &&
+        now() - savedCache.fetchedAt < configFor(ctx).refreshIntervalMs &&
+        savedCache.roster === rosterKey(accounts, ctx)
+      )
+        return;
+    }
+    const generation = reportGeneration;
+    const work = (async () => {
+      const currentAccounts = accounts ?? (await service.listAccounts!());
+      if (!currentAccounts.length) return;
+      const text = await reportSavedAccounts(
+        ctx,
+        service,
+        currentAccounts,
+        configFor(ctx),
+        reportOptions(ctx),
+      );
+      if (generation === reportGeneration && accountService === service)
+        savedCache = { roster: rosterKey(currentAccounts, ctx), text, fetchedAt: now() };
+    })();
+    reportPending = work.finally(() => {
+      if (reportPending === pending) reportPending = undefined;
+    });
+    const pending = reportPending;
+    await pending;
+  };
+  const scheduleSavedRefresh = (ctx: ExtensionContext) => {
+    if (!configFor(ctx).enabled) return;
+    void refreshSaved(ctx).catch(() => undefined);
+  };
   pi.events.on(ACCOUNTS_SERVICE_EVENT, (value: unknown) => {
-    if (isMultiproviderService(value) && value.listAccounts && value.resolveAccountAuth)
+    if (isMultiproviderService(value) && value.listAccounts && value.resolveAccountAuth) {
+      if (accountService === value && accountUnsubscribers.length) return;
+      accountUnsubscribers.forEach((unsubscribe) => unsubscribe());
+      accountUnsubscribers = [];
       accountService = value;
+      reportGeneration++;
+      savedCache = undefined;
+      for (const provider of USAGE_PROVIDERS) {
+        for (const providerId of provider.providerIds) {
+          accountUnsubscribers.push(
+            value.onActiveAccountChanged(providerId, () => {
+              reportGeneration++;
+              savedCache = undefined;
+              if (reportCtx) scheduleSavedRefresh(reportCtx);
+            }),
+          );
+        }
+      }
+      if (reportCtx) scheduleSavedRefresh(reportCtx);
+    }
   });
   pi.events.emit("pi-accounts:request-service", undefined);
+  pi.on("session_start", (_event, ctx) => {
+    reportGeneration++;
+    savedCache = undefined;
+    reportCtx = ctx;
+    if (reportTimer) clearInterval(reportTimer);
+    const config = configFor(ctx);
+    if (config.enabled) {
+      reportTimer = setInterval(() => {
+        if (reportCtx) scheduleSavedRefresh(reportCtx);
+      }, config.refreshIntervalMs);
+      reportTimer.unref?.();
+      scheduleSavedRefresh(ctx);
+    }
+  });
+  pi.on("session_shutdown", () => {
+    reportGeneration++;
+    savedCache = undefined;
+    reportCtx = undefined;
+    if (reportTimer) clearInterval(reportTimer);
+    reportTimer = undefined;
+    accountUnsubscribers.forEach((unsubscribe) => unsubscribe());
+    accountUnsubscribers = [];
+  });
+  pi.on("model_select", (event, ctx) => {
+    reportCtx = Object.create(ctx, {
+      model: { value: event.model ?? ctx.model, enumerable: true },
+    }) as ExtensionContext;
+    if (
+      savedCache &&
+      reportCtx.model?.provider === "openai-codex" &&
+      reportCtx.model.id === "gpt-5.3-codex-spark"
+    )
+      scheduleSavedRefresh(reportCtx);
+  });
   pi.registerCommand("usage", {
     description: "Show usage for every saved account, with labels and current-account markers",
     handler: async (_args: string, ctx: ExtensionContext) => {
@@ -400,19 +534,21 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
           try {
             const accounts = await accountService.listAccounts();
             if (accounts.length) {
-              const config = readConfig(options.env ?? process.env, ctx.cwd);
-              return await reportSavedAccounts(ctx, accountService, accounts, config, {
-                ...options,
-                now: options.now?.() ?? Date.now(),
-                colorize:
-                  hasTerminalUI(ctx) && ctx.ui.theme
-                    ? (severity, text) => ctx.ui.theme.fg(SEVERITY_COLORS[severity], text)
-                    : undefined,
-                colorHeading:
-                  hasTerminalUI(ctx) && ctx.ui.theme
-                    ? (text) => ctx.ui.theme.fg("text", text)
-                    : undefined,
-              });
+              const roster = rosterKey(accounts, ctx);
+              if (savedCache?.roster === roster) {
+                if (now() - savedCache.fetchedAt >= configFor(ctx).refreshIntervalMs)
+                  scheduleSavedRefresh(ctx);
+                return savedCache.text;
+              }
+              await refreshSaved(ctx, accounts);
+              if (savedCache?.roster === roster) return savedCache.text;
+              return await reportSavedAccounts(
+                ctx,
+                accountService,
+                accounts,
+                configFor(ctx),
+                reportOptions(ctx),
+              );
             }
           } catch {
             return "Could not read saved accounts. Check account storage and try again.";

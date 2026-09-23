@@ -174,6 +174,22 @@ describe("subscription requests", () => {
       }),
     ).rejects.toThrow("Check your connection");
   });
+  it("retries only the failed Grok request", async () => {
+    const urls: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      urls.push(url);
+      if (url === GROK_USAGE_URL && urls.length === 2)
+        throw new Error("temporary connection failure");
+      return ok(
+        url === GROK_USER_URL
+          ? { userId: "test-user" }
+          : { config: { creditUsagePercent: 10, currentPeriod: { type: "WEEK" } } },
+      );
+    };
+    const snapshot = await fetchGrokUsage(credential, { fetchImpl });
+    expect(snapshot.windows.weekly?.percentUsed).toBe(10);
+    expect(urls).toEqual([GROK_USER_URL, GROK_USAGE_URL, GROK_USAGE_URL]);
+  });
   it("rejects oversized responses before parsing", async () => {
     const json = vi.fn();
     await expect(

@@ -587,15 +587,16 @@ describe("/usage", () => {
     expect(harness.notifications.at(-1)).toContain(
       "5h rolling: [███████████████████░]  97% left ·   3% used",
     );
-    expect(harness.count()).toBe(2);
+    expect(harness.count()).toBe(1);
   });
 
-  it("queries again on each invocation", async () => {
+  it("uses the fresh background cache on repeated invocations", async () => {
     const harness = makeHarness();
     await settle(harness);
-    await harness.command()?.("refresh", harness.ctx);
+    await harness.command()?.("", harness.ctx);
+    await harness.command()?.("", harness.ctx);
 
-    expect(harness.count()).toBe(2);
+    expect(harness.count()).toBe(1);
   });
 
   it("queries on demand while keeping the footer hidden for other models", async () => {

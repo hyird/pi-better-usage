@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, it, vi } from "vitest";
 import { registerUsage } from "../index.ts";
+import { ACCOUNTS_SERVICE_EVENT, type MultiproviderService } from "../src/multiprovider.ts";
 import { GROK_USER_URL, OPENAI_USAGE_URL } from "../src/providers.ts";
 import type { FetchLike } from "../src/usage.ts";
 import type { UsagePanel } from "../src/usage-panel.ts";
@@ -30,6 +31,7 @@ function harness(disabled = false, fetchOverride?: FetchLike) {
     );
   }
   const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>();
+  const eventListeners = new Map<string, ((value: unknown) => void)[]>();
   const commands = new Map<
     string,
     { handler(args: string, ctx: ExtensionContext): Promise<void> }
@@ -67,7 +69,14 @@ function harness(disabled = false, fetchOverride?: FetchLike) {
     },
   } as unknown as ExtensionContext;
   const pi = {
-    events: { on() {}, emit() {} },
+    events: {
+      on(name: string, fn: (value: unknown) => void) {
+        eventListeners.set(name, [...(eventListeners.get(name) ?? []), fn]);
+      },
+      emit(name: string, value: unknown) {
+        eventListeners.get(name)?.forEach((fn) => fn(value));
+      },
+    },
     on(name: string, fn: (event: unknown, ctx: ExtensionContext) => unknown) {
       handlers.set(name, [...(handlers.get(name) ?? []), fn]);
     },
@@ -100,7 +109,17 @@ function harness(disabled = false, fetchOverride?: FetchLike) {
     emit("session_shutdown");
     rmSync(dir, { recursive: true, force: true });
   });
-  return { ctx, emit, fetchImpl, commands, widgets, notify, panelReports };
+  return {
+    ctx,
+    emit,
+    fetchImpl,
+    commands,
+    widgets,
+    notify,
+    panelReports,
+    announceService: (service: MultiproviderService) =>
+      eventListeners.get(ACCOUNTS_SERVICE_EVENT)?.forEach((fn) => fn(service)),
+  };
 }
 it("registers only /usage and polls only the active provider", async () => {
   const h = harness();
@@ -114,6 +133,56 @@ it("registers only /usage and polls only the active provider", async () => {
   expect(h.widgets.get("pi-better-usage-openai")).toBeUndefined();
   await flush();
   expect(h.widgets.get("pi-better-usage-grok")).toBeTypeOf("function");
+});
+it("refreshes saved-account usage in the background and serves /usage from that cache", async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness();
+    const accounts = [
+      {
+        id: "opencode-go/work",
+        providerId: "opencode-go",
+        label: "work",
+        authKind: "api_key",
+        active: true,
+      },
+    ];
+    const service = {
+      listAccounts: async () => accounts,
+      resolveAccountAuth: async () => ({ accessToken: "fixture-key", label: "work" }),
+      getActiveAccount: async () => undefined,
+      resolveActiveAccountAuth: async () => undefined,
+      onActiveAccountChanged: () => () => {},
+    } satisfies MultiproviderService;
+    h.announceService(service);
+    h.emit("session_start");
+    await vi.advanceTimersByTimeAsync(0);
+    const firstCount = h.fetchImpl.mock.calls.length;
+    expect(firstCount).toBeGreaterThan(0);
+    await h.commands.get("usage")!.handler("", h.ctx);
+    expect(h.panelReports.at(-1)).toContain("OpenCode Go usage · work [Current] · API key");
+    expect(h.fetchImpl).toHaveBeenCalledTimes(firstCount);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    const refreshedCount = h.fetchImpl.mock.calls.length;
+    expect(refreshedCount).toBeGreaterThan(firstCount);
+    await h.commands.get("usage")!.handler("", h.ctx);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(refreshedCount);
+
+    accounts.splice(0, 1, {
+      id: "opencode-go/new",
+      providerId: "opencode-go",
+      label: "new",
+      authKind: "api_key",
+      active: true,
+    });
+    await h.commands.get("usage")!.handler("", h.ctx);
+    expect(h.panelReports.at(-1)).toContain("OpenCode Go usage · new [Current]");
+    expect(h.panelReports.at(-1)).not.toContain("work [Current]");
+    expect(h.fetchImpl.mock.calls.length).toBeGreaterThan(refreshedCount);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 it("queries all providers on demand, even when automatic display is disabled", async () => {
   const h = harness(true);

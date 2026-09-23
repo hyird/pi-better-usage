@@ -7,6 +7,7 @@ import {
 import { GROK_PROVIDERS, object, resolveSubscriptionCredential } from "./subscription-auth.ts";
 import {
   fetchUsage,
+  fetchWithTransportRetry,
   UsageError,
   type FetchLike,
   type UsageSnapshot,
@@ -130,15 +131,14 @@ async function requestJson(
   name: string,
   options: QueryOptions,
 ): Promise<unknown> {
-  const timeout = AbortSignal.timeout(15000);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
   try {
-    const response = await fetchImpl(url, {
-      headers: { Accept: "application/json", ...headers },
-      signal,
-      redirect: "error",
-    });
+    const response = await fetchWithTransportRetry(
+      fetchImpl,
+      url,
+      { Accept: "application/json", ...headers },
+      options.signal,
+    );
     if (!response.ok) {
       const auth = response.status === 401 || response.status === 403;
       throw new UsageError(

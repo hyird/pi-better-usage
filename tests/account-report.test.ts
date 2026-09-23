@@ -37,12 +37,116 @@ it("reports every account with labels and Current, isolates credentials and fail
     },
   } as unknown as ExtensionContext;
   const result = await reportSavedAccounts(ctx, service, accounts, DEFAULT_CONFIG, { fetchImpl });
-  expect(result).toContain("work [Current]");
+  expect(result).toContain("OpenCode Go usage · work [Current] · API key");
   expect(result).toContain("personal");
   expect(result).toContain("90% left");
   expect(result).toContain("20% left");
-  expect(result).toContain("expired\nUsage unavailable");
+  expect(result).toContain("OpenCode Go usage · expired · API key\nUsage unavailable");
   expect(result).toContain("not supported for this provider");
   expect(result).not.toContain("secret-token");
   expect(keys.sort()).toEqual(["Bearer key-a", "Bearer key-b"]);
+});
+
+it("identifies providers and credential types when account labels are identical", async () => {
+  const accounts: SavedUsageAccount[] = [
+    {
+      id: "opencode-go/hyird",
+      label: "hyird",
+      providerId: "opencode-go",
+      authKind: "api_key",
+      active: true,
+    },
+    { id: "xai/hyird", label: "hyird", providerId: "xai", authKind: "oauth", active: true },
+  ];
+  const service = {
+    resolveAccountAuth: async () => {
+      throw new Error("fixture failure");
+    },
+  } as unknown as MultiproviderService;
+  const ctx = {
+    model: { provider: "opencode-go", id: "model" },
+    modelRegistry: {},
+  } as unknown as ExtensionContext;
+  const result = await reportSavedAccounts(ctx, service, accounts, DEFAULT_CONFIG);
+  expect(result).toContain("OpenCode Go usage · hyird [Current] · API key\nUsage unavailable");
+  expect(result).toContain("Grok usage · hyird [Current] · Subscription\nUsage unavailable");
+});
+
+it("reports a connection failure without suggesting the account must sign in", async () => {
+  const account: SavedUsageAccount = {
+    id: "opencode-go/current",
+    label: "current",
+    providerId: "opencode-go",
+    authKind: "api_key",
+    active: true,
+  };
+  const service = {
+    resolveAccountAuth: async () => ({ accessToken: "fixture-key", label: "current" }),
+  } as unknown as MultiproviderService;
+  const ctx = {
+    model: { provider: "opencode-go", id: "model" },
+    modelRegistry: {},
+  } as unknown as ExtensionContext;
+  const result = await reportSavedAccounts(ctx, service, [account], DEFAULT_CONFIG, {
+    fetchImpl: async () => {
+      throw new Error("secret connection detail");
+    },
+  });
+  expect(result).toContain("Usage unavailable. OpenCode Go usage request failed or timed out.");
+  expect(result).not.toContain("sign in again");
+  expect(result).not.toContain("secret connection detail");
+});
+
+it("does not query or display an account removed after the report started", async () => {
+  const account: SavedUsageAccount = {
+    id: "openai-codex/removed",
+    label: "removed",
+    providerId: "openai-codex",
+    authKind: "oauth",
+    active: true,
+  };
+  const fetchImpl = vi.fn() as unknown as FetchLike;
+  const service = {
+    listAccounts: async () => [],
+    resolveAccountAuth: async () => {
+      throw new Error("Account not found");
+    },
+  } as unknown as MultiproviderService;
+  const ctx = {
+    model: { provider: "openai-codex", id: "test" },
+    modelRegistry: {},
+  } as unknown as ExtensionContext;
+  expect(await reportSavedAccounts(ctx, service, [account], DEFAULT_CONFIG, { fetchImpl })).toBe(
+    "",
+  );
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+it("keeps the usage report when a final account-list refresh is briefly unavailable", async () => {
+  const account: SavedUsageAccount = {
+    id: "opencode-go/current",
+    label: "current",
+    providerId: "opencode-go",
+    authKind: "api_key",
+    active: true,
+  };
+  const service = {
+    listAccounts: async () => {
+      throw new Error("Storage is temporarily locked");
+    },
+    resolveAccountAuth: async () => ({ accessToken: "fixture-key", label: "current" }),
+  } as unknown as MultiproviderService;
+  const ctx = {
+    model: { provider: "opencode-go", id: "model" },
+    modelRegistry: {},
+  } as unknown as ExtensionContext;
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    json: async () => ({ usage: { weekly: { percent: 10 } } }),
+  });
+  expect(
+    await reportSavedAccounts(ctx, service, [account], DEFAULT_CONFIG, { fetchImpl }),
+  ).toContain("current [Current]");
 });

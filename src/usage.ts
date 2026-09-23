@@ -118,21 +118,42 @@ export type FetchLike = (
   init?: { headers?: Record<string, string>; signal?: AbortSignal; redirect?: "error" },
 ) => Promise<UsageResponse>;
 
+/** Retry one failed connection without replaying HTTP errors or a caller cancellation. */
+export async function fetchWithTransportRetry(
+  fetchImpl: FetchLike,
+  url: string,
+  headers: Record<string, string>,
+  callerSignal?: AbortSignal,
+): Promise<UsageResponse> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    callerSignal?.throwIfAborted();
+    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
+    try {
+      return await fetchImpl(url, { headers, signal, redirect: "error" });
+    } catch (error) {
+      if (callerSignal?.aborted || attempt === 1) throw error;
+    }
+  }
+  throw new Error("Unreachable request state");
+}
+
 export async function fetchUsage(
   credential: UsageCredential,
   options: { signal?: AbortSignal; fetchImpl?: FetchLike; now?: number } = {},
 ): Promise<UsageSnapshot> {
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-
   let response: UsageResponse;
   try {
-    response = await fetchImpl(USAGE_URL, {
-      headers: { Authorization: `Bearer ${credential.apiKey}`, Accept: "application/json" },
-      signal,
-      redirect: "error",
-    });
+    response = await fetchWithTransportRetry(
+      fetchImpl,
+      USAGE_URL,
+      {
+        Authorization: `Bearer ${credential.apiKey}`,
+        Accept: "application/json",
+      },
+      options.signal,
+    );
   } catch {
     throw new UsageError("transport", "OpenCode Go usage request failed or timed out.");
   }

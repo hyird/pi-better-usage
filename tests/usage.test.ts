@@ -201,6 +201,18 @@ describe("fetchUsage", () => {
     });
   });
 
+  it("retries a temporary connection failure with the same account key", async () => {
+    const requests: string[] = [];
+    const fetchImpl: FetchLike = async (_url, init) => {
+      requests.push(new Headers(init?.headers).get("authorization") ?? "");
+      if (requests.length === 1) throw new Error("temporary connection failure");
+      return respond({})("https://opencode.ai/zen/go/v1/usage");
+    };
+    const snapshot = await fetchUsage(credential(), { fetchImpl });
+    expect(snapshot.windows.weekly?.percentUsed).toBe(1);
+    expect(requests).toEqual(["Bearer secret", "Bearer secret"]);
+  });
+
   it("rejects an oversized response before reading it", async () => {
     await expect(
       fetchUsage(credential(), { fetchImpl: respond({ contentLength: String(5_000_000) }) }),

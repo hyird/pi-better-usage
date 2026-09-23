@@ -3,7 +3,7 @@ import type { UsageConfig } from "./config.ts";
 import { sanitizeLabel } from "./format.ts";
 import type { MultiproviderService, SavedUsageAccount } from "./multiprovider.ts";
 import { USAGE_PROVIDERS } from "./providers.ts";
-import { formatDetail, type FetchLike, type UsageSeverity } from "./usage.ts";
+import { formatDetail, UsageError, type FetchLike, type UsageSeverity } from "./usage.ts";
 
 /** Read every profile in isolation. A failed account must never fall back to the current login. */
 export async function reportSavedAccounts(
@@ -26,10 +26,18 @@ export async function reportSavedAccounts(
       const index = next++;
       const account = accounts[index]!;
       const label = sanitizeLabel(account.label) ?? "unnamed";
-      const title = `${label}${account.active ? " [Current]" : ""}`;
+      const authKind =
+        account.authKind === "oauth"
+          ? "Subscription"
+          : account.authKind === "api_key"
+            ? "API key"
+            : "Other";
+      const title = `${label}${account.active ? " [Current]" : ""} · ${authKind}`;
       const provider = USAGE_PROVIDERS.find((p) => p.providerIds.includes(account.providerId));
+      const serviceName = provider?.name ?? sanitizeLabel(account.providerId) ?? "Unknown provider";
+      const errorHeading = `${serviceName} usage · ${title}`;
       if (!provider) {
-        results[index] = `${title}\nUsage reporting is not supported for this provider.`;
+        results[index] = `${errorHeading}\nUsage reporting is not supported for this provider.`;
         continue;
       }
       try {
@@ -59,7 +67,8 @@ export async function reportSavedAccounts(
         });
         if (authenticationFailed) throw new Error("Account authentication failed");
         if (!credential) {
-          results[index] = `${title}\nSubscription usage is unavailable for this credential type.`;
+          results[index] =
+            `${errorHeading}\nSubscription usage is unavailable for this credential type.`;
           continue;
         }
         const snapshot = await provider.fetch(credential, {
@@ -77,21 +86,36 @@ export async function reportSavedAccounts(
         const accountHeading = `${details.shift()} · ${title}`;
         results[index] =
           `${options.colorHeading?.(accountHeading) ?? accountHeading}\n${details.join("\n")}`;
-      } catch {
-        results[index] =
-          `${title}\nUsage unavailable. The account may need to sign in again; other accounts are unaffected.`;
+      } catch (error) {
+        const reason =
+          error instanceof UsageError
+            ? error.message
+            : "Account authentication or usage lookup failed.";
+        results[index] = `${errorHeading}\nUsage unavailable. ${reason}`;
       }
     }
   }
   await Promise.all(Array.from({ length: Math.min(3, accounts.length) }, () => worker()));
+  // A removed account can disappear while requests are in flight. Recheck once,
+  // but keep the report usable if account storage is briefly locked.
+  let currentIds: Set<string> | undefined;
+  try {
+    if (service.listAccounts)
+      currentIds = new Set((await service.listAccounts()).map((account) => account.id));
+  } catch {
+    // The initial roster was valid; per-account errors remain visible.
+  }
   const groups = new Map<string, string[]>();
   accounts.forEach((account, index) => {
+    if (currentIds && !currentIds.has(account.id)) return;
     const providerName =
       USAGE_PROVIDERS.find((provider) => provider.providerIds.includes(account.providerId))?.name ??
       account.providerId;
     const group = groups.get(providerName) ?? [];
-    group.push(results[index]!);
+    if (results[index]) group.push(results[index]!);
     groups.set(providerName, group);
   });
-  return Array.from(groups.values(), (reports) => reports.join("\n\n")).join("\n\n");
+  return Array.from(groups.values(), (reports) => reports.join("\n\n"))
+    .filter(Boolean)
+    .join("\n\n");
 }
