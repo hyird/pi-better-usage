@@ -73,7 +73,7 @@ export async function reportSavedAccounts(
           options.now,
           options.colorize,
         ).split("\n");
-        results[index] = `${title} · ${details.shift()}\n${details.join("\n")}`;
+        results[index] = `${details.shift()} · ${title}\n${details.join("\n")}`;
       } catch {
         results[index] =
           `${title}\nUsage unavailable. The account may need to sign in again; other accounts are unaffected.`;
