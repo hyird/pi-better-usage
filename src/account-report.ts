@@ -16,7 +16,7 @@ export async function reportSavedAccounts(
     env?: NodeJS.ProcessEnv;
     now?: number;
     colorize?: (severity: UsageSeverity, text: string) => string;
-    colorHeading?: (kind: "provider" | "account", text: string) => string;
+    colorHeading?: (text: string) => string;
   } = {},
 ): Promise<string> {
   const results: string[] = Array.from({ length: accounts.length }, () => "");
@@ -76,7 +76,7 @@ export async function reportSavedAccounts(
         ).split("\n");
         const accountHeading = `${details.shift()} · ${title}`;
         results[index] =
-          `${options.colorHeading?.("account", accountHeading) ?? accountHeading}\n${details.join("\n")}`;
+          `${options.colorHeading?.(accountHeading) ?? accountHeading}\n${details.join("\n")}`;
       } catch {
         results[index] =
           `${title}\nUsage unavailable. The account may need to sign in again; other accounts are unaffected.`;
@@ -93,9 +93,5 @@ export async function reportSavedAccounts(
     group.push(results[index]!);
     groups.set(providerName, group);
   });
-  return Array.from(
-    groups,
-    ([providerId, reports]) =>
-      `${options.colorHeading?.("provider", providerId) ?? providerId}\n${reports.join("\n\n")}`,
-  ).join("\n\n");
+  return Array.from(groups.values(), (reports) => reports.join("\n\n")).join("\n\n");
 }
