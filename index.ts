@@ -1,3 +1,4 @@
+import { showUsagePanel } from "./src/usage-panel.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -394,13 +395,13 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   pi.registerCommand("usage", {
     description: "Show usage for every saved account, with labels and current-account markers",
     handler: async (_args: string, ctx: ExtensionContext) => {
-      if (accountService?.listAccounts && accountService.resolveAccountAuth) {
-        try {
-          const accounts = await accountService.listAccounts();
-          if (accounts.length) {
-            const config = readConfig(options.env ?? process.env, ctx.cwd);
-            ctx.ui.notify(
-              await reportSavedAccounts(ctx, accountService, accounts, config, {
+      await showUsagePanel(ctx, async () => {
+        if (accountService?.listAccounts && accountService.resolveAccountAuth) {
+          try {
+            const accounts = await accountService.listAccounts();
+            if (accounts.length) {
+              const config = readConfig(options.env ?? process.env, ctx.cwd);
+              return await reportSavedAccounts(ctx, accountService, accounts, config, {
                 ...options,
                 now: options.now?.() ?? Date.now(),
                 colorize:
@@ -411,21 +412,15 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
                   hasTerminalUI(ctx) && ctx.ui.theme
                     ? (text) => ctx.ui.theme.fg("text", text)
                     : undefined,
-              }),
-              "info",
-            );
-            return;
+              });
+            }
+          } catch {
+            return "Could not read saved accounts. Check account storage and try again.";
           }
-        } catch {
-          ctx.ui.notify(
-            "Could not read saved accounts. Check account storage and try again.",
-            "error",
-          );
-          return;
         }
-      }
-      const details = await Promise.all(reports.map((report) => report(ctx)));
-      ctx.ui.notify(details.join("\n\n"), "info");
+        const details = await Promise.all(reports.map((report) => report(ctx)));
+        return details.join("\n\n");
+      });
     },
   });
 }

@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { registerUsage } from "../index.ts";
 import { GROK_USER_URL, OPENAI_USAGE_URL } from "../src/providers.ts";
 import type { FetchLike } from "../src/usage.ts";
+import type { UsagePanel } from "../src/usage-panel.ts";
 const cleanups: (() => void)[] = [];
 afterEach(() => {
   cleanups.splice(0).forEach((fn) => fn());
@@ -35,6 +36,7 @@ function harness(disabled = false, fetchOverride?: FetchLike) {
   >();
   const widgets = new Map<string, unknown>();
   const notify = vi.fn();
+  const panelReports: string[] = [];
   const ctx = {
     cwd: dir,
     mode: "tui",
@@ -45,6 +47,23 @@ function harness(disabled = false, fetchOverride?: FetchLike) {
       setStatus() {},
       setWidget: (key: string, content: unknown) => widgets.set(key, content),
       notify,
+      custom: (
+        factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => UsagePanel,
+      ) =>
+        new Promise<void>((resolve) => {
+          const panel = factory(
+            {
+              terminal: { rows: 200 },
+              requestRender: () => {
+                panelReports.push(panel.render(140).join("\n"));
+                panel.handleInput("\u001b");
+              },
+            },
+            { fg: (_color: string, text: string) => text },
+            {},
+            resolve,
+          );
+        }),
     },
   } as unknown as ExtensionContext;
   const pi = {
@@ -81,7 +100,7 @@ function harness(disabled = false, fetchOverride?: FetchLike) {
     emit("session_shutdown");
     rmSync(dir, { recursive: true, force: true });
   });
-  return { ctx, emit, fetchImpl, commands, widgets, notify };
+  return { ctx, emit, fetchImpl, commands, widgets, notify, panelReports };
 }
 it("registers only /usage and polls only the active provider", async () => {
   const h = harness();
@@ -102,7 +121,8 @@ it("queries all providers on demand, even when automatic display is disabled", a
   await flush();
   expect(h.fetchImpl).not.toHaveBeenCalled();
   await h.commands.get("usage")!.handler("", h.ctx);
-  const report = h.notify.mock.calls.at(-1)?.[0];
+  expect(h.notify).not.toHaveBeenCalled();
+  const report = h.panelReports.at(-1);
   expect(report).toContain("OpenAI Codex usage");
   expect(report).toContain("75% left");
   expect(report).toContain("Grok usage");
@@ -185,7 +205,8 @@ it("keeps other provider results when one provider rejects authentication", asyn
           : { usage: { rolling: { percent: 20 } } },
   }));
   await h.commands.get("usage")!.handler("", h.ctx);
-  const report = h.notify.mock.calls.at(-1)?.[0];
+  expect(h.notify).not.toHaveBeenCalled();
+  const report = h.panelReports.at(-1);
   expect(report).toContain("authentication was rejected");
   expect(report).toContain("90% left");
   expect(report).toContain("80% left");
