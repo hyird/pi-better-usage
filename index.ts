@@ -407,6 +407,10 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
                   hasTerminalUI(ctx) && ctx.ui.theme
                     ? (severity, text) => ctx.ui.theme.fg(SEVERITY_COLORS[severity], text)
                     : undefined,
+                colorHeading:
+                  hasTerminalUI(ctx) && ctx.ui.theme
+                    ? (kind, text) => ctx.ui.theme.fg(kind === "provider" ? "accent" : "text", text)
+                    : undefined,
               }),
               "info",
             );
