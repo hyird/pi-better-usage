@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerProviderUsage } from "../index.ts";
+import registerExtension, { registerProviderUsage, registerUsage } from "../index.ts";
 import { globalConfigPath } from "../src/paths.ts";
 import {
   ACCOUNTS_SERVICE_EVENT,
@@ -17,6 +17,32 @@ const NOW = Date.parse("2026-09-22T12:00:00Z");
 
 const tempDirs: string[] = [];
 const cleanups: (() => void)[] = [];
+
+describe("OMP children", () => {
+  it("skips hooks, account service requests, commands and refresh timers", () => {
+    const touch = vi.fn(() => {
+      throw new Error("child must not initialize quota tracking");
+    });
+    const pi = {
+      on: touch,
+      events: { on: touch, emit: touch },
+      registerCommand: touch,
+    } as unknown as ExtensionAPI;
+    const interval = vi.spyOn(globalThis, "setInterval");
+    try {
+      registerUsage(pi, { env: { PI_OMP_CHILD: "1" }, fetchImpl: touch });
+      expect(touch).not.toHaveBeenCalled();
+      expect(interval).not.toHaveBeenCalled();
+      vi.stubEnv("PI_OMP_CHILD", "1");
+      registerExtension(pi);
+      expect(touch).not.toHaveBeenCalled();
+      expect(interval).not.toHaveBeenCalled();
+    } finally {
+      interval.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();

@@ -42,7 +42,7 @@ Run `/reload` again to load the update.
 
 In the terminal, `/usage` opens a focused overlay instead of printing the report into chat. Press **Esc** to close it and return to the editor, including while usage is still loading. Use **↑ / ↓**, **Page Up / Page Down**, or **Home / End** to scroll through longer reports.
 
-Every invocation queries all three services in parallel. Each service shows its own result or a sign-in/error message, so one unavailable provider does not block the others.
+`/usage` reuses matching cached reports when available; opening it does not force a fresh query. Without a saved-account report, it gathers reports for all three services in parallel. Each service or saved account shows its own result or a sign-in/error message, so one unavailable provider does not block the others.
 
 Example output:
 
@@ -85,9 +85,11 @@ The account label appears only for a pooled account. The reset countdown belongs
 
 - The active provider refreshes every 60 seconds by default. Turn completion also checks whether the cache is due for an update.
 - Model and provider switches show matching cached usage immediately, then refresh in the background. A provider without cached data needs its first query to finish.
-- `/usage` always queries all providers again. The open panel shows a snapshot; close it and run `/usage` again to refresh. RPC clients retain text output.
+- `/usage` shows matching cached data immediately. When that data is older than `usage.refreshIntervalMs`, it requests a background refresh; saved-account reports only schedule this refresh when `usage.enabled` is true. If no matching report is cached, the command waits for a report to load.
+- The open panel shows a snapshot and does not update when a background refresh finishes. Close it and run `/usage` again after the refresh to see the updated cache. Reopening before the refresh finishes can show the same data. RPC clients retain text output.
 - Account changes and new sessions clear the cache. Independent quota buckets, such as Spark, do not reuse the default bucket's reading.
 - Failed queries hide the footer reading; `/usage` shows the error. Missing data is never presented as unused quota.
+- OMP child processes (`PI_OMP_CHILD=1`) skip this extension's registration, account-service requests, and refresh timers. Usage tracking stays in the parent session; normal TUI and RPC sessions are unchanged.
 
 ## Sign in
 

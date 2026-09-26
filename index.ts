@@ -392,6 +392,8 @@ export function registerProviderUsage(
 }
 
 export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): void {
+  // OMP JSON children have no quota panel; the parent owns account refreshes.
+  if ((options.env ?? process.env).PI_OMP_CHILD === "1") return;
   const reports = USAGE_PROVIDERS.map((provider) => registerProviderUsage(pi, provider, options));
   let accountService: MultiproviderService | undefined;
   let reportCtx: ExtensionContext | undefined;
