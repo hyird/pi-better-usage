@@ -1,9 +1,48 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import * as tui from "@earendil-works/pi-tui";
 import { expect, it, vi } from "vitest";
 import { showUsagePanel, UsagePanel } from "../src/usage-panel.ts";
 
+vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@earendil-works/pi-tui")>();
+  return { ...actual, wrapTextWithAnsi: vi.fn(actual.wrapTextWithAnsi) };
+});
+
 const theme = { fg: (_color: string, value: string) => value } as Theme;
+
+it("wraps only when content or width changes, not on scrolling or height changes", () => {
+  const wrap = vi.mocked(tui.wrapTextWithAnsi);
+  wrap.mockClear();
+  const repaint = vi.fn();
+  let rows = 20;
+  const panel = new UsagePanel(theme, () => rows, repaint, vi.fn());
+  try {
+    const content = Array.from(
+      { length: 50 },
+      (_, i) => `Account ${i} ${"long report ".repeat(5)}`,
+    ).join("\n");
+    panel.setContent(content);
+    panel.render(60);
+    const first = wrap.mock.calls.length;
+    for (let i = 0; i < 10; i++) {
+      panel.handleInput("\u001b[B");
+      panel.render(60);
+    }
+    rows = 10;
+    panel.render(60);
+    expect(wrap).toHaveBeenCalledTimes(first);
+    const paints = repaint.mock.calls.length;
+    panel.setContent(content);
+    expect(repaint).toHaveBeenCalledTimes(paints);
+    panel.render(30);
+    expect(wrap.mock.calls.length).toBeGreaterThan(first);
+    panel.setContent("Changed report");
+    expect(panel.render(30).join("\n")).toContain("Changed report");
+  } finally {
+    wrap.mockClear();
+  }
+});
 
 it("scrolls through long reports and stays inside the terminal on resize", () => {
   let rows = 15;

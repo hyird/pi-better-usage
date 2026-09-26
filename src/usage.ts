@@ -31,13 +31,22 @@ export type UsageErrorKind = "auth" | "http" | "invalid" | "oversize" | "transpo
 export class UsageError extends Error {
   readonly kind: UsageErrorKind;
   readonly status?: number;
+  readonly retryAfterMs?: number;
 
-  constructor(kind: UsageErrorKind, message: string, status?: number) {
+  constructor(kind: UsageErrorKind, message: string, status?: number, retryAfterMs?: number) {
     super(message);
     this.name = "UsageError";
     this.kind = kind;
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+export function retryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (!value?.trim()) return undefined;
+  const seconds = Number(value);
+  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - now;
+  return Number.isFinite(delay) && delay >= 0 ? delay : undefined;
 }
 
 /* ----------------------------------------------------------------- parser -- */
@@ -95,7 +104,7 @@ export function parseUsagePayload(data: unknown, now = Date.now()): UsageSnapsho
 
 /* ------------------------------------------------------------------ fetch -- */
 
-function httpError(status: number): UsageError {
+function httpError(status: number, retryAfter?: number): UsageError {
   if (status === 401 || status === 403) {
     return new UsageError(
       "auth",
@@ -104,9 +113,19 @@ function httpError(status: number): UsageError {
     );
   }
   if (status === 429) {
-    return new UsageError("http", "OpenCode Go usage is rate limited. Try again later.", status);
+    return new UsageError(
+      "http",
+      "OpenCode Go usage is rate limited. Try again later.",
+      status,
+      retryAfter,
+    );
   }
-  return new UsageError("http", `OpenCode Go usage request failed with status ${status}.`, status);
+  return new UsageError(
+    "http",
+    `OpenCode Go usage request failed with status ${status}.`,
+    status,
+    retryAfter,
+  );
 }
 
 export type UsageResponse = {
@@ -160,7 +179,11 @@ export async function fetchUsage(
   } catch {
     throw new UsageError("transport", "OpenCode Go usage request failed or timed out.");
   }
-  if (!response.ok) throw httpError(response.status);
+  if (!response.ok)
+    throw httpError(
+      response.status,
+      retryAfterMs(response.headers.get("retry-after"), options.now),
+    );
 
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {

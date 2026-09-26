@@ -18,6 +18,7 @@ import {
   type SavedUsageAccount,
 } from "./src/multiprovider.ts";
 import { reportSavedAccounts } from "./src/account-report.ts";
+import { UsageQueryCache, failureDelay, quotaScope } from "./src/query-cache.ts";
 import {
   accountLabel,
   formatDetail,
@@ -34,9 +35,6 @@ export * from "./src/format.ts";
 export * from "./src/identity.ts";
 export * from "./src/multiprovider.ts";
 export * from "./src/usage.ts";
-
-/** After a rejected key, stop polling until the credential or account changes. */
-const AUTH_FAILURE_COOLDOWN_MS = 10 * 60_000;
 
 /** Severity to theme colour, matching pi-better-grok's palette. */
 const SEVERITY_COLORS: Record<UsageSegment["severity"], ThemeColor> = {
@@ -79,40 +77,42 @@ export function registerProviderUsage(
   pi: ExtensionAPI,
   provider: UsageProvider,
   options: RegisterOptions = {},
+  sharedQueries?: UsageQueryCache,
 ): (ctx: ExtensionContext) => Promise<string> {
   const statusKey = `${STATUS_KEY}-${provider.id}`;
   const env = options.env ?? process.env;
   const now = options.now ?? (() => Date.now());
+  const queries = sharedQueries ?? new UsageQueryCache(options);
 
   let config: UsageConfig = readConfig(env);
   let cache: CacheState | undefined;
   let lastError: string | undefined;
-  let authBlockedUntil = 0;
+  let retryAt = 0;
+  let failures = 0;
   let lastStatusText: string | undefined;
   /** Whether a widget is currently installed, so we know when to clear one. */
   let widgetInstalled = false;
+  let widgetKey: string | undefined;
+  let widgetUi: ExtensionContext["ui"] | undefined;
+  let widgetTheme: Theme | undefined;
   let service: MultiproviderService | undefined;
   let unsubscribeAccount: (() => void) | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
-  let refreshing = false;
+  let pendingRefresh: Promise<void> | undefined;
+  let active = true;
   // Invalidate pending work on model/account/session changes.
   let generation = 0;
   let activeProvider: string | undefined;
   let activeModelId: string | undefined;
   const scopeFor = (providerId?: string, modelId?: string): string => {
-    const id = provider.providerIds.includes(providerId ?? "")
-      ? providerId
-      : provider.providerIds[0];
-    const bucket =
-      provider.id === "openai" && modelId === "gpt-5.3-codex-spark" ? "spark" : "default";
-    return `${id}:${bucket}`;
+    return quotaScope(provider, providerId, modelId);
   };
   let refreshAbort: AbortController | undefined;
   const invalidateRefresh = (): void => {
     generation += 1;
     refreshAbort?.abort();
     refreshAbort = undefined;
-    refreshing = false;
+    pendingRefresh = undefined;
   };
   /** Latest event ctx, so a late multilogin announcement can still refresh. */
   let lastCtx: ExtensionContext | undefined;
@@ -129,7 +129,15 @@ export function registerProviderUsage(
 
   const setStatusWidget = (ctx: ExtensionContext, parts: UsageSegment[] | undefined): void => {
     if (!parts && !widgetInstalled) return;
-    widgetInstalled = parts !== undefined;
+    const key = parts ? JSON.stringify(parts) : undefined;
+    if (
+      parts &&
+      widgetInstalled &&
+      key === widgetKey &&
+      ctx.ui === widgetUi &&
+      ctx.ui.theme === widgetTheme
+    )
+      return;
     try {
       ctx.ui.setWidget(
         statusKey,
@@ -145,6 +153,10 @@ export function registerProviderUsage(
           : undefined,
         { placement: "belowEditor" },
       );
+      widgetInstalled = parts !== undefined;
+      widgetKey = key;
+      widgetUi = ctx.ui;
+      widgetTheme = ctx.ui.theme;
     } catch {
       // A stale ctx after session replacement must not break the turn.
     }
@@ -187,72 +199,79 @@ export function registerProviderUsage(
   };
 
   /**
-   * `force` bypasses the TTL and the auth cooldown; `ignoreEligibility` also
-   * bypasses the active-model gate for an explicit usage command.
+   * `force` rechecks credentials even with a fresh local reading. Shared quota
+   * TTLs and failure backoff still apply, including for explicit commands.
    */
   const refresh = async (
     ctx: ExtensionContext,
     mode: { force?: boolean; ignoreEligibility?: boolean } = {},
   ): Promise<void> => {
+    if (!active) return;
     if (!config.enabled && !mode.ignoreEligibility) return;
     if (!mode.ignoreEligibility && !eligible(ctx)) return;
-    if (!mode.force && authBlockedUntil > now()) return;
-    if (!mode.force && cache && now() - cache.fetchedAt < config.refreshIntervalMs) return;
-    if (refreshing) {
-      if (!mode.force) return;
-      invalidateRefresh();
-    }
-    refreshing = true;
+    if (retryAt > now()) return;
+    if (
+      !mode.force &&
+      cache?.scope === scopeFor(ctx.model?.provider, ctx.model?.id) &&
+      now() - cache.fetchedAt < config.refreshIntervalMs
+    )
+      return;
+    if (pendingRefresh) return pendingRefresh;
     const requestGeneration = generation;
     const scope = scopeFor(ctx.model?.provider, ctx.model?.id);
     refreshAbort = new AbortController();
     const signal = refreshAbort.signal;
-    try {
-      const credential = await provider.resolve(ctx, { service: () => service, env }, signal);
-      if (requestGeneration !== generation) return;
-      if (!credential) {
-        cache = undefined;
-        lastError = `No ${provider.name} subscription credential. Use ${provider.loginHint}.`;
-        render(ctx);
-        return;
+    const work = (async () => {
+      try {
+        const credential = await provider.resolve(ctx, { service: () => service, env }, signal);
+        if (requestGeneration !== generation) return;
+        if (!credential) {
+          cache = undefined;
+          lastError = `No ${provider.name} subscription credential. Use ${provider.loginHint}.`;
+          retryAt = now() + 60_000;
+          render(lastCtx ?? ctx);
+          return;
+        }
+        // A pooled account switch changes the quota owner; never reuse its reading.
+        if (
+          cache &&
+          (cache.credential.fingerprint !== credential.fingerprint || cache.scope !== scope)
+        ) {
+          cache = undefined;
+          render(ctx);
+        }
+        const reading = await queries.read(provider, credential, {
+          providerId: ctx.model?.provider,
+          modelId: ctx.model?.id,
+          signal,
+          ttl: config.refreshIntervalMs,
+        });
+        if (requestGeneration !== generation) return;
+        cache = { scope, credential, ...reading };
+        lastError = undefined;
+        retryAt = 0;
+        failures = 0;
+        render(lastCtx ?? ctx);
+      } catch (error) {
+        if (requestGeneration !== generation) return;
+        const usageError =
+          error instanceof UsageError
+            ? error
+            : new UsageError("transport", `${provider.name} usage is unavailable.`);
+        lastError = usageError.message;
+        retryAt = now() + failureDelay(usageError, ++failures);
+        render(lastCtx ?? ctx);
+      } finally {
+        if (requestGeneration === generation) {
+          refreshAbort = undefined;
+        }
       }
-      // A pooled account switch changes the quota owner; never reuse its reading.
-      if (
-        cache &&
-        (cache.credential.fingerprint !== credential.fingerprint || cache.scope !== scope)
-      ) {
-        cache = undefined;
-        render(ctx);
-      }
-      const snapshot = await provider.fetch(credential, {
-        modelId:
-          ctx.model?.provider && provider.providerIds.includes(ctx.model.provider)
-            ? ctx.model.id
-            : undefined,
-        signal,
-        fetchImpl: options.fetchImpl,
-        now: now(),
-      });
-      if (requestGeneration !== generation) return;
-      cache = { scope, credential, snapshot, fetchedAt: now() };
-      lastError = undefined;
-      authBlockedUntil = 0;
-      render(ctx);
-    } catch (error) {
-      if (requestGeneration !== generation) return;
-      const usageError =
-        error instanceof UsageError
-          ? error
-          : new UsageError("transport", `${provider.name} usage is unavailable.`);
-      lastError = usageError.message;
-      if (usageError.kind === "auth") authBlockedUntil = now() + AUTH_FAILURE_COOLDOWN_MS;
-      render(ctx);
-    } finally {
-      if (requestGeneration === generation) {
-        refreshing = false;
-        refreshAbort = undefined;
-      }
-    }
+    })();
+    const pending = work.finally(() => {
+      if (pendingRefresh === pending) pendingRefresh = undefined;
+    });
+    pendingRefresh = pending;
+    return pending;
   };
 
   const attachService = (candidate: MultiproviderService): void => {
@@ -265,9 +284,11 @@ export function registerProviderUsage(
         candidate.onActiveAccountChanged(providerId, (event) => {
           // Drop the previous account's numbers, then re-read for the new one.
           invalidateRefresh();
+          if (!sharedQueries) queries.clear(providerId);
           cache = undefined;
           lastError = undefined;
-          authBlockedUntil = 0;
+          retryAt = 0;
+          failures = 0;
           const ctx = lastCtx ?? event?.ctx;
           if (!ctx) return;
           render(ctx);
@@ -287,7 +308,8 @@ export function registerProviderUsage(
       cache = undefined;
       lastError = undefined;
       render(lastCtx);
-      authBlockedUntil = 0;
+      retryAt = 0;
+      failures = 0;
       void refresh(lastCtx, { force: true }).catch(() => undefined);
     }
   };
@@ -295,6 +317,17 @@ export function registerProviderUsage(
   const stopTimer = (): void => {
     if (timer !== undefined) clearInterval(timer);
     timer = undefined;
+  };
+  const syncTimer = (ctx: ExtensionContext): void => {
+    if (!eligible(ctx)) {
+      stopTimer();
+      return;
+    }
+    if (timer !== undefined) return;
+    timer = setInterval(() => {
+      if (lastCtx) void refresh(lastCtx).catch(() => undefined);
+    }, config.refreshIntervalMs);
+    timer.unref?.();
   };
 
   pi.events.on(MULTIPROVIDER_SERVICE_EVENT, (value: unknown) => {
@@ -305,27 +338,35 @@ export function registerProviderUsage(
   });
 
   pi.on("session_start", (_event, ctx) => {
+    active = true;
     invalidateRefresh();
+    if (!sharedQueries) queries.clear();
     config = readConfig(env, ctx.cwd);
     cache = undefined;
     lastError = undefined;
-    authBlockedUntil = 0;
+    retryAt = 0;
+    failures = 0;
     lastCtx = ctx;
     activeProvider = ctx.model?.provider;
     activeModelId = ctx.model?.id;
     lastStatusText = undefined;
+    widgetKey = undefined;
     render(ctx);
     stopTimer();
-    timer = setInterval(() => {
-      if (lastCtx) void refresh(lastCtx).catch(() => undefined);
-    }, config.refreshIntervalMs);
-    timer.unref?.();
+    syncTimer(ctx);
     void refresh(ctx, { force: true }).catch(() => undefined);
   });
 
   pi.on("model_select", (event, ctx) => {
-    invalidateRefresh();
     const model = event.model ?? ctx.model;
+    const changed =
+      activeProvider !== model?.provider ||
+      scopeFor(activeProvider, activeModelId) !== scopeFor(model?.provider, model?.id);
+    if (changed) {
+      invalidateRefresh();
+      retryAt = 0;
+      failures = 0;
+    }
     const selectedCtx = Object.create(ctx, {
       model: { value: model, enumerable: true },
     }) as ExtensionContext;
@@ -337,9 +378,9 @@ export function registerProviderUsage(
     if (eligible(selectedCtx) && cache && cache.scope !== scopeFor(activeProvider, activeModelId)) {
       cache = undefined;
     }
-    authBlockedUntil = 0;
     render(selectedCtx);
-    if (eligible(selectedCtx)) void refresh(selectedCtx, { force: true }).catch(() => undefined);
+    syncTimer(selectedCtx);
+    if (eligible(selectedCtx)) void refresh(selectedCtx, { force: changed }).catch(() => undefined);
   });
 
   const updateDisplay = (_event: unknown, ctx: ExtensionContext): void => {
@@ -357,7 +398,9 @@ export function registerProviderUsage(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    active = false;
     invalidateRefresh();
+    if (!sharedQueries) queries.clear();
     setStatus(ctx, undefined);
     setStatusWidget(ctx, undefined);
     stopTimer();
@@ -367,7 +410,8 @@ export function registerProviderUsage(
     lastCtx = undefined;
     cache = undefined;
     lastError = undefined;
-    authBlockedUntil = 0;
+    retryAt = 0;
+    failures = 0;
     activeProvider = undefined;
     activeModelId = undefined;
     lastStatusText = undefined;
@@ -381,7 +425,7 @@ export function registerProviderUsage(
     } else {
       await refresh(ctx, { force: true, ignoreEligibility: true });
     }
-    return cache && !lastError
+    return cache?.scope === scope && !lastError
       ? formatDetail(
           cache.snapshot,
           config,
@@ -399,20 +443,37 @@ export function registerProviderUsage(
 export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): void {
   // OMP JSON children have no quota panel; the parent owns account refreshes.
   if ((options.env ?? process.env).PI_OMP_CHILD === "1") return;
-  const reports = USAGE_PROVIDERS.map((provider) => registerProviderUsage(pi, provider, options));
+  const queries = new UsageQueryCache(options);
+  pi.on("session_start", () => queries.clear());
+  pi.on("session_shutdown", () => queries.clear());
+  const reports = USAGE_PROVIDERS.map((provider) =>
+    registerProviderUsage(pi, provider, options, queries),
+  );
   let accountService: MultiproviderService | undefined;
   let reportCtx: ExtensionContext | undefined;
   let reportTimer: ReturnType<typeof setInterval> | undefined;
   let reportGeneration = 0;
   let reportPending: Promise<void> | undefined;
+  let reportAbort: AbortController | undefined;
+  let live = true;
   let savedCache: { roster: string; text: string; fetchedAt: number } | undefined;
   let accountUnsubscribers: Array<() => void> = [];
   const now = options.now ?? (() => Date.now());
+  const bucketFor = (ctx: ExtensionContext) =>
+    ctx.model?.provider === "openai-codex" && ctx.model.id === "gpt-5.3-codex-spark"
+      ? "spark"
+      : "default";
+  let reportBucket = "default";
+  const invalidateSaved = () => {
+    reportGeneration++;
+    reportAbort?.abort();
+    reportAbort = undefined;
+    reportPending = undefined;
+    savedCache = undefined;
+  };
   const rosterKey = (accounts: SavedUsageAccount[], ctx: ExtensionContext) =>
     JSON.stringify([
-      ctx.model?.provider === "openai-codex" && ctx.model.id === "gpt-5.3-codex-spark"
-        ? "spark"
-        : "default",
+      bucketFor(ctx),
       ...accounts.map(({ id, providerId, label, authKind, active }) => [
         id,
         providerId,
@@ -424,6 +485,7 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   const configFor = (ctx: ExtensionContext) => readConfig(options.env ?? process.env, ctx.cwd);
   const reportOptions = (ctx: ExtensionContext) => ({
     ...options,
+    queries,
     now: now(),
     colorize:
       hasTerminalUI(ctx) && ctx.ui.theme
@@ -440,40 +502,46 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
     knownAccounts?: SavedUsageAccount[],
   ): Promise<void> => {
     const service = accountService;
-    if (!service?.listAccounts || !service.resolveAccountAuth) return;
+    if (!live || !service?.listAccounts || !service.resolveAccountAuth) return;
+    const generation = reportGeneration;
+    const config = configFor(ctx);
     let accounts = knownAccounts;
-    if (reportPending) {
+    while (reportPending) {
       await reportPending.catch(() => undefined);
+      if (!live || generation !== reportGeneration || service !== accountService) return;
       accounts ??= await service.listAccounts();
+      if (!live || generation !== reportGeneration || service !== accountService) return;
       if (
         savedCache &&
-        now() - savedCache.fetchedAt < configFor(ctx).refreshIntervalMs &&
+        now() - savedCache.fetchedAt < config.refreshIntervalMs &&
         savedCache.roster === rosterKey(accounts, ctx)
       )
         return;
     }
-    const generation = reportGeneration;
+    const controller = new AbortController();
+    reportAbort = controller;
+    const scopedCtx = Object.create(ctx, {
+      model: { value: ctx.model, enumerable: true },
+    }) as ExtensionContext;
     const work = (async () => {
       const currentAccounts = accounts ?? (await service.listAccounts!());
-      if (!currentAccounts.length) return;
-      const text = await reportSavedAccounts(
-        ctx,
-        service,
-        currentAccounts,
-        configFor(ctx),
-        reportOptions(ctx),
-      );
-      if (generation === reportGeneration && accountService === service)
-        savedCache = { roster: rosterKey(currentAccounts, ctx), text, fetchedAt: now() };
+      controller.signal.throwIfAborted();
+      const text = await reportSavedAccounts(scopedCtx, service, currentAccounts, config, {
+        ...reportOptions(scopedCtx),
+        signal: controller.signal,
+      });
+      if (live && generation === reportGeneration && accountService === service)
+        savedCache = { roster: rosterKey(currentAccounts, scopedCtx), text, fetchedAt: now() };
     })();
     reportPending = work.finally(() => {
       if (reportPending === pending) reportPending = undefined;
+      if (reportAbort === controller) reportAbort = undefined;
     });
     const pending = reportPending;
     await pending;
   };
   const scheduleSavedRefresh = (ctx: ExtensionContext) => {
-    if (!configFor(ctx).enabled) return;
+    if (!live || !configFor(ctx).enabled) return;
     void refreshSaved(ctx).catch(() => undefined);
   };
   pi.events.on(ACCOUNTS_SERVICE_EVENT, (value: unknown) => {
@@ -482,14 +550,13 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
       accountUnsubscribers.forEach((unsubscribe) => unsubscribe());
       accountUnsubscribers = [];
       accountService = value;
-      reportGeneration++;
-      savedCache = undefined;
+      invalidateSaved();
       for (const provider of USAGE_PROVIDERS) {
         for (const providerId of provider.providerIds) {
           accountUnsubscribers.push(
             value.onActiveAccountChanged(providerId, () => {
-              reportGeneration++;
-              savedCache = undefined;
+              queries.clear(providerId);
+              invalidateSaved();
               if (reportCtx) scheduleSavedRefresh(reportCtx);
             }),
           );
@@ -500,9 +567,10 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   });
   pi.events.emit("pi-accounts:request-service", undefined);
   pi.on("session_start", (_event, ctx) => {
-    reportGeneration++;
-    savedCache = undefined;
+    live = true;
+    invalidateSaved();
     reportCtx = ctx;
+    reportBucket = bucketFor(ctx);
     if (reportTimer) clearInterval(reportTimer);
     const config = configFor(ctx);
     if (config.enabled) {
@@ -514,8 +582,8 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
     }
   });
   pi.on("session_shutdown", () => {
-    reportGeneration++;
-    savedCache = undefined;
+    live = false;
+    invalidateSaved();
     reportCtx = undefined;
     if (reportTimer) clearInterval(reportTimer);
     reportTimer = undefined;
@@ -526,20 +594,23 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
     reportCtx = Object.create(ctx, {
       model: { value: event.model ?? ctx.model, enumerable: true },
     }) as ExtensionContext;
-    if (
-      savedCache &&
-      reportCtx.model?.provider === "openai-codex" &&
-      reportCtx.model.id === "gpt-5.3-codex-spark"
-    )
+    const bucket = bucketFor(reportCtx);
+    if (bucket !== reportBucket) {
+      reportBucket = bucket;
+      invalidateSaved();
       scheduleSavedRefresh(reportCtx);
+    }
   });
   pi.registerCommand("usage", {
     description: "Show usage for every saved account, with labels and current-account markers",
     handler: async (_args: string, ctx: ExtensionContext) => {
       await showUsagePanel(ctx, async () => {
+        if (!live) return "Usage request cancelled.";
+        const generation = reportGeneration;
         if (accountService?.listAccounts && accountService.resolveAccountAuth) {
           try {
             const accounts = await accountService.listAccounts();
+            if (!live || generation !== reportGeneration) return "Usage request cancelled.";
             if (accounts.length) {
               const roster = rosterKey(accounts, ctx);
               if (savedCache?.roster === roster) {
@@ -548,20 +619,16 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
                 return savedCache.text;
               }
               await refreshSaved(ctx, accounts);
+              if (!live || generation !== reportGeneration) return "Usage request cancelled.";
               if (savedCache?.roster === roster) return savedCache.text;
-              return await reportSavedAccounts(
-                ctx,
-                accountService,
-                accounts,
-                configFor(ctx),
-                reportOptions(ctx),
-              );
+              return "Usage report changed while loading. Run /usage again.";
             }
           } catch {
             return "Could not read saved accounts. Check account storage and try again.";
           }
         }
         const details = await Promise.all(reports.map((report) => report(ctx)));
+        if (!live || generation !== reportGeneration) return "Usage request cancelled.";
         return details.join("\n\n");
       });
     },

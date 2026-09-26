@@ -179,7 +179,8 @@ it("refreshes saved-account usage in the background and serves /usage from that 
     await h.commands.get("usage")!.handler("", h.ctx);
     expect(h.panelReports.at(-1)).toContain("OpenCode Go usage · new [Current]");
     expect(h.panelReports.at(-1)).not.toContain("work [Current]");
-    expect(h.fetchImpl.mock.calls.length).toBeGreaterThan(refreshedCount);
+    // The fixture renamed the saved entry but kept the same actual credential.
+    expect(h.fetchImpl.mock.calls.length).toBe(refreshedCount);
   } finally {
     vi.useRealTimers();
   }

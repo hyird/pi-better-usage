@@ -9,6 +9,7 @@ import { GROK_PROVIDERS, object, resolveSubscriptionCredential } from "./subscri
 import {
   fetchUsage,
   fetchWithTransportRetry,
+  retryAfterMs,
   UsageError,
   type FetchLike,
   type UsageSnapshot,
@@ -150,6 +151,7 @@ async function requestJson(
           ? `${name} authentication was rejected. Sign in again.`
           : `${name} usage request failed (HTTP ${response.status}).`,
         response.status,
+        retryAfterMs(response.headers.get("retry-after"), options.now),
       );
     }
     if (Number(response.headers.get("content-length")) > 256 * 1024)

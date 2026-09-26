@@ -85,12 +85,16 @@ Usage: 5h 75% left · wk 60% left · ↺ 5d0h - 9/27 21:30 · work
 
 The account label appears only for a pooled account. The reset countdown belongs to the displayed window closest to its limit.
 
-- The active provider refreshes every 60 seconds by default. Turn completion also checks whether the cache is due for an update.
-- Model and provider switches show matching cached usage immediately, then refresh in the background. A provider without cached data needs its first query to finish.
+- The active provider refreshes every 60 seconds by default. Turn completion also checks whether the cache is due for an update. Inactive providers do not keep polling timers.
+- Model and provider switches reuse matching fresh quota. Switching models within the same quota bucket does not restart an in-flight query or request another reading while the cache is fresh. Expired readings refresh in the background; a provider without cached data needs its first query to finish.
+- The footer and saved-account reports share quota readings and in-flight requests for the same provider, credential, account ID, and quota bucket. Account labels remain separate, and new credentials or a different bucket cannot reuse another account's quota.
 - `/usage` shows matching cached data immediately. When that data is older than `usage.refreshIntervalMs`, it requests a background refresh; saved-account reports only schedule this refresh when `usage.enabled` is true. If no matching report is cached, the command waits for a report to load.
 - The open panel shows a snapshot and does not update when a background refresh finishes. Close it and run `/usage` again after the refresh to see the updated cache. Reopening before the refresh finishes can show the same data. RPC clients retain text output.
 - Account changes and new sessions clear the cache. Independent quota buckets, such as Spark, do not reuse the default bucket's reading.
+- Session shutdown/reload cancels active requests and stops queued account lookups. Account or quota-bucket changes cancel obsolete reports. If the footer and a report share a request, closing only one consumer leaves the other consumer's request running.
 - Failed queries hide the footer reading; `/usage` shows the error. Missing data is never presented as unused quota.
+- Failed lookups back off before retrying: authentication errors wait 10 minutes; HTTP 429 starts at 60 seconds; other request failures start at 15 seconds. Repeated request failures increase the delay up to 5 minutes, and a longer server `Retry-After` is honored. Repeated `/usage` calls and same-bucket model switches respect this delay. Account changes and new sessions reset it; missing credentials are rechecked after 60 seconds.
+- Unchanged footer content does not reinstall the widget. Report scrolling reuses wrapped lines until its text or width changes; terminal height and theme changes still render correctly.
 - OMP child processes (`PI_OMP_CHILD=1`) skip this extension's registration, account-service requests, and refresh timers. Usage tracking stays in the parent session; normal TUI and RPC sessions are unchanged.
 
 ## Sign in

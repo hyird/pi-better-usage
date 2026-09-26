@@ -13,6 +13,7 @@ export class UsagePanel {
   private pageSize = 1;
   private lineCount = 1;
   private closed = false;
+  private wrapped: { width: number; lines: string[] } | undefined;
 
   constructor(
     private theme: Theme,
@@ -22,8 +23,9 @@ export class UsagePanel {
   ) {}
 
   setContent(text: string): void {
-    if (this.closed) return;
+    if (this.closed || text === this.text) return;
     this.text = text;
+    this.wrapped = undefined;
     this.repaint();
   }
 
@@ -52,9 +54,15 @@ export class UsagePanel {
 
   render(width: number): string[] {
     const inner = Math.max(1, width - 4);
-    const lines = this.text
-      .split("\n")
-      .flatMap((line) => (line ? wrapTextWithAnsi(line, inner) : [""]));
+    if (this.wrapped?.width !== inner) {
+      this.wrapped = {
+        width: inner,
+        lines: this.text
+          .split("\n")
+          .flatMap((line) => (line ? wrapTextWithAnsi(line, inner) : [""])),
+      };
+    }
+    const lines = this.wrapped.lines;
     this.lineCount = lines.length;
     this.pageSize = Math.max(1, Math.floor(this.rows() * 0.8) - 4);
     this.offset = Math.max(0, Math.min(this.offset, this.lineCount - this.pageSize));

@@ -4,6 +4,7 @@ import { sanitizeLabel } from "./format.ts";
 import { accountEmail } from "./account-identity.ts";
 import type { MultiproviderService, SavedUsageAccount } from "./multiprovider.ts";
 import { USAGE_PROVIDERS } from "./providers.ts";
+import type { UsageQueryCache } from "./query-cache.ts";
 import { formatDetail, UsageError, type FetchLike, type UsageSeverity } from "./usage.ts";
 
 /** Read every profile in isolation. A failed account must never fall back to the current login. */
@@ -18,12 +19,15 @@ export async function reportSavedAccounts(
     now?: number;
     colorize?: (severity: UsageSeverity, text: string) => string;
     colorHeading?: (text: string) => string;
+    signal?: AbortSignal;
+    queries?: UsageQueryCache;
   } = {},
 ): Promise<string> {
   const results: string[] = Array.from({ length: accounts.length }, () => "");
   let next = 0;
   async function worker() {
     while (next < accounts.length) {
+      options.signal?.throwIfAborted();
       const index = next++;
       const account = accounts[index]!;
       const label = sanitizeLabel(account.label) ?? "unnamed";
@@ -45,11 +49,13 @@ export async function reportSavedAccounts(
         let authenticationFailed = false;
         const isolated: MultiproviderService = {
           getActiveAccount: async (id) => (id === account.providerId ? account : undefined),
-          resolveActiveAccountAuth: async (id) => {
+          resolveActiveAccountAuth: async (id, _ctx, signal) => {
             if (id !== account.providerId) return undefined;
             let auth;
             try {
-              auth = await service.resolveAccountAuth!(account.id, ctx);
+              signal?.throwIfAborted();
+              auth = await service.resolveAccountAuth!(account.id, ctx, signal);
+              signal?.throwIfAborted();
             } catch {
               authenticationFailed = true;
               throw new Error("Account authentication failed");
@@ -62,21 +68,38 @@ export async function reportSavedAccounts(
         const scoped = Object.create(ctx, {
           model: { value: { ...ctx.model, provider: account.providerId }, enumerable: true },
         }) as ExtensionContext;
-        const credential = await provider.resolve(scoped, {
-          service: () => isolated,
-          env: options.env,
-        });
+        const credential = await provider.resolve(
+          scoped,
+          {
+            service: () => isolated,
+            env: options.env,
+          },
+          options.signal,
+        );
+        options.signal?.throwIfAborted();
         if (authenticationFailed) throw new Error("Account authentication failed");
         if (!credential) {
           results[index] =
             `${errorHeading}\nSubscription usage is unavailable for this credential type.`;
           continue;
         }
-        const snapshot = await provider.fetch(credential, {
-          fetchImpl: options.fetchImpl,
-          now: options.now,
-          modelId: ctx.model?.provider === account.providerId ? ctx.model.id : undefined,
-        });
+        const modelId = ctx.model?.provider === account.providerId ? ctx.model.id : undefined;
+        const snapshot = options.queries
+          ? (
+              await options.queries.read(provider, credential, {
+                providerId: account.providerId,
+                modelId,
+                signal: options.signal,
+                ttl: config.refreshIntervalMs,
+              })
+            ).snapshot
+          : await provider.fetch(credential, {
+              fetchImpl: options.fetchImpl,
+              now: options.now,
+              modelId,
+              signal: options.signal,
+            });
+        options.signal?.throwIfAborted();
         const details = formatDetail(
           snapshot,
           { ...config, showAccountLabel: false },
@@ -90,6 +113,7 @@ export async function reportSavedAccounts(
         results[index] =
           `${options.colorHeading?.(accountHeading) ?? accountHeading}\n${details.join("\n")}`;
       } catch (error) {
+        options.signal?.throwIfAborted();
         const reason =
           error instanceof UsageError
             ? error.message
@@ -99,6 +123,7 @@ export async function reportSavedAccounts(
     }
   }
   await Promise.all(Array.from({ length: Math.min(3, accounts.length) }, () => worker()));
+  options.signal?.throwIfAborted();
   // A removed account can disappear while requests are in flight. Recheck once,
   // but keep the report usable if account storage is briefly locked.
   let currentIds: Set<string> | undefined;
@@ -108,6 +133,7 @@ export async function reportSavedAccounts(
   } catch {
     // The initial roster was valid; per-account errors remain visible.
   }
+  options.signal?.throwIfAborted();
   const groups = new Map<string, string[]>();
   accounts.forEach((account, index) => {
     if (currentIds && !currentIds.has(account.id)) return;

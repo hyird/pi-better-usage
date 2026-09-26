@@ -253,10 +253,12 @@ describe("model and session transitions", () => {
     expect(harness.widgets.at(-1)?.options).toEqual({ placement: "belowEditor" });
   });
 
-  it("keeps the same account's quota visible while a new model refreshes in the background", async () => {
+  it("reuses fresh quota on same-bucket model switches and refreshes after expiry", async () => {
     let calls = 0;
+    let clock = NOW;
     let finish!: () => void;
     const harness = makeHarness({
+      now: () => clock,
       fetchImpl: async () => {
         const payload = okPayload();
         if (++calls > 1) {
@@ -274,6 +276,11 @@ describe("model and session transitions", () => {
     harness.handlers.get("model_select")?.({ model }, harness.ctx);
     expect(renderWidget(harness.lastWidget())).toContain("97%");
     await flush();
+    expect(calls).toBe(1);
+    expect(harness.widgets.length).toBe(writes);
+    clock += 60_000;
+    harness.handlers.get("model_select")?.({ model }, harness.ctx);
+    await flush();
     expect(calls).toBe(2);
     expect(harness.widgets.slice(writes).every((entry) => entry.content !== undefined)).toBe(true);
     finish();
@@ -283,8 +290,10 @@ describe("model and session transitions", () => {
 
   it("clears the cached quota as soon as background resolution detects another account", async () => {
     let calls = 0;
+    let clock = NOW;
     let finish!: () => void;
     const harness = makeHarness({
+      now: () => clock,
       fetchImpl: async () => {
         if (++calls > 1)
           await new Promise<void>((resolve) => {
@@ -301,6 +310,7 @@ describe("model and session transitions", () => {
     await settle(harness);
     harness.ctx.modelRegistry.getProviderAuth = async () =>
       ({ auth: { apiKey: "other-account" } }) as never;
+    clock += 60_000;
     switchTo(harness, "opencode-go");
     await flush();
     expect(harness.lastWidget()).toBeUndefined();
@@ -419,7 +429,9 @@ describe("model and session transitions", () => {
 
   it("hides cached quota on an error rather than leaving stale usage on screen", async () => {
     let calls = 0;
+    let clock = NOW;
     const harness = makeHarness({
+      now: () => clock,
       fetchImpl: async () => {
         if (++calls > 1) throw new Error("network unavailable");
         return {
@@ -432,6 +444,7 @@ describe("model and session transitions", () => {
     });
     await settle(harness);
     expect(harness.lastWidget()).toBeTypeOf("function");
+    clock += 60_000;
     switchTo(harness, "opencode-go");
     await flush();
     expect(harness.lastWidget()).toBeUndefined();
@@ -439,6 +452,25 @@ describe("model and session transitions", () => {
 });
 
 describe("footer modes", () => {
+  it("does not rebuild unchanged widgets and still responds to theme changes", async () => {
+    const harness = makeHarness();
+    await settle(harness);
+    const before = harness.widgets.length;
+    for (const event of [
+      "agent_start",
+      "turn_end",
+      "agent_end",
+      "session_tree",
+      "session_compact",
+    ]) {
+      harness.handlers.get(event)?.({}, harness.ctx);
+    }
+    await flush();
+    expect(harness.widgets.length).toBe(before);
+    Object.defineProperty(harness.ctx.ui, "theme", { value: theme, configurable: true });
+    harness.handlers.get("agent_start")?.({}, harness.ctx);
+    expect(harness.widgets.length).toBe(before + 1);
+  });
   it("status writes flat text to the footer", async () => {
     const harness = makeHarness({ config: { footerMode: "status" } });
     await settle(harness);
@@ -471,6 +503,15 @@ describe("footer modes", () => {
 });
 
 describe("refresh policy", () => {
+  it("a late command cannot restart requests after shutdown", async () => {
+    const harness = makeHarness();
+    await settle(harness);
+    const before = harness.count();
+    harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+    await harness.command()?.("", harness.ctx);
+    await flush();
+    expect(harness.count()).toBe(before);
+  });
   it("does not refetch while the cache is fresh", async () => {
     const harness = makeHarness();
     await settle(harness);
@@ -482,7 +523,7 @@ describe("refresh policy", () => {
 
     await harness.handlers.get("model_select")?.({}, harness.ctx);
     await flush();
-    expect(harness.count()).toBe(2);
+    expect(harness.count()).toBe(1);
   });
 
   it("backs off after a rejected key instead of polling", async () => {
@@ -504,10 +545,11 @@ describe("refresh policy", () => {
     }
     expect(calls).toBe(1);
 
-    // Picking a model is a user action, so it retries once even inside the cooldown.
+    // Same-bucket model switches and repeated commands also respect backoff.
     await harness.handlers.get("model_select")?.({}, harness.ctx);
+    await harness.command()?.("", harness.ctx);
     await flush();
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
   });
 
   it("reports a missing credential without calling the endpoint", async () => {
