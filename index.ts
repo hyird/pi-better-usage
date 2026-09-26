@@ -166,7 +166,12 @@ export function registerProviderUsage(
       !lastError &&
       cache.scope ===
         scopeFor(activeProvider ?? ctx.model?.provider, activeModelId ?? ctx.model?.id)
-        ? usageSegments(cache.snapshot, config, accountLabel(cache.credential), now())
+        ? usageSegments(
+            cache.snapshot,
+            config,
+            accountLabel(cache.credential, cache.snapshot),
+            now(),
+          )
         : [];
     const parts: UsageSegment[] | undefined = segments.length > 0 ? segments : undefined;
 

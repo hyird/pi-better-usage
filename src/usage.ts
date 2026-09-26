@@ -1,5 +1,6 @@
 import type { UsageConfig } from "./config.ts";
 import type { UsageCredential } from "./credential.ts";
+import { accountEmail } from "./account-identity.ts";
 import { clampPercent, formatPercent, sanitizeLabel } from "./format.ts";
 import { USAGE_URL, WINDOW_LABELS, WINDOW_NAMES, type WindowKey } from "./identity.ts";
 
@@ -20,6 +21,7 @@ export type UsageWindow = {
 
 export type UsageSnapshot = {
   capturedAt: number;
+  accountEmail?: string;
   providerLabel?: string;
   windows: Partial<Record<WindowKey, UsageWindow>>;
 };
@@ -87,7 +89,8 @@ export function parseUsagePayload(data: unknown, now = Date.now()): UsageSnapsho
   if (Object.keys(windows).length === 0) {
     throw new UsageError("invalid", "OpenCode Go usage response contained no usable window.");
   }
-  return { capturedAt: now, windows };
+  const email = accountEmail((data as { email?: unknown }).email);
+  return { capturedAt: now, windows, ...(email ? { accountEmail: email } : {}) };
 }
 
 /* ------------------------------------------------------------------ fetch -- */
@@ -96,7 +99,7 @@ function httpError(status: number): UsageError {
   if (status === 401 || status === 403) {
     return new UsageError(
       "auth",
-      "OpenCode Go rejected the API key. Use /login opencode-go, or /multilogin opencode-go to add an account.",
+      "OpenCode Go rejected the API key. Use /login opencode-go to sign in.",
       status,
     );
   }
@@ -193,8 +196,15 @@ export function formatClock(instant: number, _now = Date.now()): string {
 }
 
 /** Credential source names are internal metadata, not account labels. */
-export function accountLabel(credential: UsageCredential): string | undefined {
-  return credential.source === "multilogin" ? sanitizeLabel(credential.label) : undefined;
+export function accountLabel(
+  credential: UsageCredential,
+  snapshot?: UsageSnapshot,
+): string | undefined {
+  return (
+    accountEmail(snapshot?.accountEmail) ??
+    accountEmail(credential.email) ??
+    (credential.source === "multilogin" ? sanitizeLabel(credential.label) : undefined)
+  );
 }
 
 /** The window closest to its limit drives the countdown shown in the widget. */
@@ -297,7 +307,7 @@ export function formatDetail(
   now = Date.now(),
   colorize?: (severity: UsageSeverity, text: string) => string,
 ): string {
-  const account = config.showAccountLabel ? accountLabel(credential) : undefined;
+  const account = config.showAccountLabel ? accountLabel(credential, snapshot) : undefined;
   const lines = [
     `${snapshot.providerLabel ?? "OpenCode Go"} usage${account ? ` — account: ${account}` : ""}`,
   ];

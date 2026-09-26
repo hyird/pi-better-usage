@@ -6,6 +6,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { extractApiKey, type CredentialResolver, type UsageCredential } from "./credential.ts";
 import { piAgentDir, expandTildePath } from "./paths.ts";
 import { UsageError } from "./usage.ts";
+import { emailFromToken } from "./account-identity.ts";
 
 export const GROK_PROVIDERS = ["xai", "xai-oauth", "xai-auth"];
 export function object(value: unknown): Record<string, unknown> {
@@ -55,6 +56,7 @@ function credential(
   return {
     apiKey: token,
     accountId,
+    email: emailFromToken(token),
     source,
     label,
     fingerprint: createHash("sha256")
@@ -109,7 +111,7 @@ export async function resolveSubscriptionCredential(
       } catch {
         throw new UsageError(
           "auth",
-          `${kind} pooled account is unavailable. Sign in again with /multilogin ${id}.`,
+          `${kind} pooled account is unavailable. Sign in again with /login ${id}.`,
         );
       }
     }

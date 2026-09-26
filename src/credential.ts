@@ -10,6 +10,7 @@ export type UsageCredentialSource = "multilogin" | "pi" | "authFile" | "env";
 export type UsageCredential = {
   apiKey: string;
   accountId?: string;
+  email?: string;
   /** Pooled account label, or the credential source for Pi's own key. */
   label: string;
   source: UsageCredentialSource;

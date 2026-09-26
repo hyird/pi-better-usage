@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { UsageConfig } from "./config.ts";
 import { sanitizeLabel } from "./format.ts";
+import { accountEmail } from "./account-identity.ts";
 import type { MultiproviderService, SavedUsageAccount } from "./multiprovider.ts";
 import { USAGE_PROVIDERS } from "./providers.ts";
 import { formatDetail, UsageError, type FetchLike, type UsageSeverity } from "./usage.ts";
@@ -83,7 +84,9 @@ export async function reportSavedAccounts(
           options.now,
           options.colorize,
         ).split("\n");
-        const accountHeading = `${details.shift()} · ${title}`;
+        const displayName =
+          accountEmail(snapshot.accountEmail) ?? accountEmail(credential.email) ?? label;
+        const accountHeading = `${details.shift()} · ${displayName}${account.active ? " [Current]" : ""} · ${authKind}`;
         results[index] =
           `${options.colorHeading?.(accountHeading) ?? accountHeading}\n${details.join("\n")}`;
       } catch (error) {

@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { accountEmail } from "./account-identity.ts";
 import {
   resolveUsageCredential,
   type CredentialResolver,
@@ -67,6 +68,8 @@ export function parseOpenAIUsage(data: unknown, now = Date.now(), modelId?: stri
     );
   }
   const snapshot: UsageSnapshot = { capturedAt: now, providerLabel: "OpenAI Codex", windows: {} };
+  const email = accountEmail(root.email);
+  if (email) snapshot.accountEmail = email;
   for (const [field, fallback] of [
     ["primary_window", "rolling"],
     ["secondary_window", "weekly"],
@@ -190,7 +193,8 @@ export async function fetchGrokUsage(
     "x-grok-client-version": "0.2.101",
     "x-grok-client-mode": "headless",
   };
-  const userId = object(await requestJson(GROK_USER_URL, headers, "Grok", options)).userId;
+  const user = object(await requestJson(GROK_USER_URL, headers, "Grok", options));
+  const userId = user.userId;
   if (typeof userId !== "string" || !/^[\x21-\x7e]{1,256}$/.test(userId))
     throw new UsageError(
       "invalid",
@@ -202,7 +206,10 @@ export async function fetchGrokUsage(
     "Grok",
     options,
   );
-  return parseGrokUsage(data, options.now);
+  const snapshot = parseGrokUsage(data, options.now);
+  const email = accountEmail(user.email);
+  if (email) snapshot.accountEmail = email;
+  return snapshot;
 }
 export const USAGE_PROVIDERS: readonly UsageProvider[] = [
   {
@@ -225,7 +232,7 @@ export const USAGE_PROVIDERS: readonly UsageProvider[] = [
     id: "opencode",
     name: "OpenCode Go",
     providerIds: ["opencode-go"],
-    loginHint: "/login opencode-go or /multilogin opencode-go",
+    loginHint: "/login opencode-go",
     resolve: resolveUsageCredential,
     fetch: fetchUsage,
   },
