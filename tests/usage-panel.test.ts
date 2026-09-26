@@ -1,5 +1,5 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
 import { expect, it, vi } from "vitest";
 import { showUsagePanel, UsagePanel } from "../src/usage-panel.ts";
@@ -10,6 +10,75 @@ vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
 });
 
 const theme = { fg: (_color: string, value: string) => value } as Theme;
+
+const wheel = (wheelDelta?: number): TuiMouseEvent => ({
+  type: "wheel",
+  button: "none",
+  x: 5,
+  y: 4,
+  screenX: 10,
+  screenY: 7,
+  width: 60,
+  height: 12,
+  shift: false,
+  alt: false,
+  ctrl: false,
+  wheelDelta,
+});
+
+it("scrolls with the wheel in both directions and consumes events at report edges", () => {
+  const panel = new UsagePanel(theme, () => 15, vi.fn(), vi.fn());
+  panel.setContent(Array.from({ length: 50 }, (_, i) => `Account ${i}`).join("\n"));
+  expect(panel.render(60).join("\n")).toContain("1–8/50");
+  expect(panel.handleMouse(wheel(3))).toEqual({ handled: true, render: true });
+  expect(panel.render(60)[2]).toContain("Account 3");
+  expect(panel.handleMouse(wheel(-2))).toEqual({ handled: true, render: true });
+  expect(panel.render(60)[2]).toContain("Account 1");
+  expect(panel.handleMouse(wheel(500))).toEqual({ handled: true, render: true });
+  const bottom = panel.render(60);
+  expect(bottom.join("\n")).toContain("Account 49");
+  expect(bottom.join("\n")).toContain("43–50/50");
+  expect(panel.handleMouse(wheel(1))).toEqual({ handled: true, render: false });
+  expect(panel.render(60)).toEqual(bottom);
+  expect(panel.handleMouse(wheel(-500))).toEqual({ handled: true, render: true });
+  expect(panel.render(60)[2]).toContain("Account 0");
+  expect(panel.handleMouse(wheel(-1))).toEqual({ handled: true, render: false });
+  expect(panel.handleMouse(wheel())).toEqual({ handled: true, render: false });
+});
+
+it("consumes wheel events on short reports and ignores other mouse events or a closed panel", () => {
+  const repaint = vi.fn();
+  const panel = new UsagePanel(theme, () => 15, repaint, vi.fn());
+  const loading = panel.render(60);
+  expect(panel.handleMouse(wheel(3))).toEqual({ handled: true, render: false });
+  expect(panel.handleMouse({ ...wheel(), type: "click" })).toBeUndefined();
+  expect(panel.render(60)).toEqual(loading);
+  panel.setContent("Short report");
+  const report = panel.render(60);
+  expect(panel.handleMouse(wheel(-3))).toEqual({ handled: true, render: false });
+  expect(panel.render(60)).toEqual(report);
+  repaint.mockClear();
+  panel.handleInput("\u001b");
+  expect(panel.handleMouse(wheel(3))).toBeUndefined();
+  expect(repaint).not.toHaveBeenCalled();
+});
+
+it("shares the scroll position between the wheel and keyboard without repainting at an edge", () => {
+  const repaint = vi.fn();
+  const panel = new UsagePanel(theme, () => 15, repaint, vi.fn());
+  panel.setContent(Array.from({ length: 50 }, (_, i) => `Account ${i}`).join("\n"));
+  panel.render(60);
+  panel.handleMouse(wheel(3));
+  panel.handleInput("\u001b[6~");
+  expect(panel.render(60)[2]).toContain("Account 11");
+  panel.handleInput("\u001b[5~");
+  expect(panel.render(60)[2]).toContain("Account 3");
+  panel.handleInput("\u001b[H");
+  expect(panel.render(60)[2]).toContain("Account 0");
+  repaint.mockClear();
+  panel.handleInput("\u001b[A");
+  expect(repaint).not.toHaveBeenCalled();
+});
 
 it("wraps only when content or width changes, not on scrolling or height changes", () => {
   const wrap = vi.mocked(tui.wrapTextWithAnsi);

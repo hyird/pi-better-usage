@@ -2,6 +2,8 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
   truncateToWidth,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
@@ -34,6 +36,12 @@ export class UsagePanel {
   }
   invalidate(): void {}
 
+  private scrollTo(offset: number): boolean {
+    const previous = this.offset;
+    this.offset = Math.max(0, Math.min(offset, this.lineCount - this.pageSize));
+    return this.offset !== previous;
+  }
+
   handleInput(data: string): void {
     if (this.closed) return;
     if (matchesKey(data, "escape")) {
@@ -41,15 +49,21 @@ export class UsagePanel {
       this.done();
       return;
     }
-    if (matchesKey(data, "up")) this.offset -= 1;
-    else if (matchesKey(data, "down")) this.offset += 1;
-    else if (matchesKey(data, "pageUp")) this.offset -= this.pageSize;
-    else if (matchesKey(data, "pageDown")) this.offset += this.pageSize;
-    else if (matchesKey(data, "home")) this.offset = 0;
-    else if (matchesKey(data, "end")) this.offset = this.lineCount;
+    let offset = this.offset;
+    if (matchesKey(data, "up")) offset -= 1;
+    else if (matchesKey(data, "down")) offset += 1;
+    else if (matchesKey(data, "pageUp")) offset -= this.pageSize;
+    else if (matchesKey(data, "pageDown")) offset += this.pageSize;
+    else if (matchesKey(data, "home")) offset = 0;
+    else if (matchesKey(data, "end")) offset = this.lineCount;
     else return;
-    this.offset = Math.max(0, Math.min(this.offset, this.lineCount - this.pageSize));
-    this.repaint();
+    if (this.scrollTo(offset)) this.repaint();
+  }
+
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (this.closed || event.type !== "wheel") return;
+    // Consume the wheel even at an edge so it cannot scroll the chat behind us.
+    return { handled: true, render: this.scrollTo(this.offset + (event.wheelDelta ?? 0)) };
   }
 
   render(width: number): string[] {
@@ -65,7 +79,7 @@ export class UsagePanel {
     const lines = this.wrapped.lines;
     this.lineCount = lines.length;
     this.pageSize = Math.max(1, Math.floor(this.rows() * 0.8) - 4);
-    this.offset = Math.max(0, Math.min(this.offset, this.lineCount - this.pageSize));
+    this.scrollTo(this.offset);
     const frame = (text: string): string => {
       const clipped = truncateToWidth(text, inner);
       return truncateToWidth(
@@ -84,7 +98,7 @@ export class UsagePanel {
     const end = Math.min(lines.length, this.offset + this.pageSize);
     const hint =
       lines.length > this.pageSize
-        ? `Esc close · ↑↓ / PgUp PgDn scroll · ${this.offset + 1}–${end}/${lines.length}`
+        ? `${this.offset + 1}–${end}/${lines.length} · Wheel / ↑↓ / PgUp PgDn · Esc close`
         : "Esc close";
     return [
       frame(this.theme.fg("accent", "Subscription usage")),

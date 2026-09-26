@@ -42,7 +42,7 @@ Run `/reload` again to load the update.
 /usage
 ```
 
-In the terminal, `/usage` opens a focused overlay instead of printing the report into chat. Press **Esc** to close it and return to the editor, including while usage is still loading. Use **↑ / ↓**, **Page Up / Page Down**, or **Home / End** to scroll through longer reports.
+In the terminal, `/usage` opens a focused overlay instead of printing the report into chat. Press **Esc** to close it and return to the editor, including while usage is still loading. Use the **mouse wheel** inside the panel, **↑ / ↓**, **Page Up / Page Down**, or **Home / End** to scroll through longer reports. The footer shows the visible line range; scrolling stops at the report's edges without moving the chat behind it.
 
 `/usage` reuses matching cached reports when available; opening it does not force a fresh query. Without a saved-account report, it gathers reports for all three services in parallel. Each service or saved account shows its own result or a sign-in/error message, so one unavailable provider does not block the others.
 
