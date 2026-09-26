@@ -30,6 +30,7 @@ export type MultiproviderServiceContext = Pick<
 >;
 
 export type MultiproviderService = {
+  updateAccountEmail?(id: string, email: string, accessToken: string): Promise<void>;
   listAccounts?(): Promise<SavedUsageAccount[]>;
   resolveAccountAuth?(
     id: string,

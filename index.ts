@@ -7,7 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { readConfig, type UsageConfig } from "./src/config.ts";
 import { type CredentialResolver, type UsageCredential } from "./src/credential.ts";
-import { truncateToWidth } from "./src/format.ts";
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { PROVIDER_ID, STATUS_KEY } from "./src/identity.ts";
 import { USAGE_PROVIDERS, type UsageProvider } from "./src/providers.ts";
 import {
@@ -145,9 +145,7 @@ export function registerProviderUsage(
           ? (_tui, theme) => ({
               invalidate() {},
               render(width: number): string[] {
-                return [
-                  truncateToWidth(colorizeSegments(parts, theme), width, theme.fg("dim", "...")),
-                ];
+                return wrapTextWithAnsi(colorizeSegments(parts, theme), Math.max(1, width));
               },
             })
           : undefined,

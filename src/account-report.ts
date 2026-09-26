@@ -107,8 +107,14 @@ export async function reportSavedAccounts(
           options.now,
           options.colorize,
         ).split("\n");
-        const displayName =
-          accountEmail(snapshot.accountEmail) ?? accountEmail(credential.email) ?? label;
+        const email = accountEmail(snapshot.accountEmail) ?? accountEmail(credential.email);
+        if (email && service.updateAccountEmail) {
+          // Optional metadata persistence must not hide a valid usage reading.
+          await service
+            .updateAccountEmail(account.id, email, credential.apiKey)
+            .catch(() => undefined);
+        }
+        const displayName = email ?? label;
         const accountHeading = `${details.shift()} · ${displayName}${account.active ? " [Current]" : ""} · ${authKind}`;
         results[index] =
           `${options.colorHeading?.(accountHeading) ?? accountHeading}\n${details.join("\n")}`;

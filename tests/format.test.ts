@@ -45,10 +45,9 @@ describe("sanitizeLabel", () => {
     expect(sanitizeLabel("\n\t")).toBeUndefined();
   });
 
-  it("elides a label that would dominate the line", () => {
-    const elided = sanitizeLabel("x".repeat(40));
-    expect(elided).toBe(`${"x".repeat(23)}…`);
-    expect(elided?.length).toBe(24);
+  it("preserves long labels and complete email addresses", () => {
+    expect(sanitizeLabel("x".repeat(40))).toBe("x".repeat(40));
+    expect(sanitizeLabel("deleted.user.0054@gmail.com")).toBe("deleted.user.0054@gmail.com");
   });
 });
 

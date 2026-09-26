@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { accountEmail, emailFromToken } from "../src/account-identity.ts";
 import { reportSavedAccounts } from "../src/account-report.ts";
@@ -74,6 +74,9 @@ it("uses email from existing provider responses without additional requests", as
 });
 
 it("keeps accounts separate when server emails match and falls back when missing", async () => {
+  const updateAccountEmail = vi
+    .fn(async () => {})
+    .mockRejectedValueOnce(new Error("temporary storage failure"));
   const accounts: SavedUsageAccount[] = ["a", "b", "c"].map((id, i) => ({
     id,
     label: `default-${i + 1}`,
@@ -82,6 +85,7 @@ it("keeps accounts separate when server emails match and falls back when missing
     active: i === 0,
   }));
   const service = {
+    updateAccountEmail,
     resolveAccountAuth: async (id: string) => ({
       accessToken: id,
       label: accounts.find((a) => a.id === id)!.label,
@@ -111,4 +115,8 @@ it("keeps accounts separate when server emails match and falls back when missing
   expect(result).toContain("default-3");
   expect(result).toContain("90% left");
   expect(result).toContain("30% left");
+  expect(updateAccountEmail).toHaveBeenCalledTimes(2);
+  expect(updateAccountEmail).toHaveBeenCalledWith("a", "same@example.com", "a");
+  expect(updateAccountEmail).toHaveBeenCalledWith("b", "same@example.com", "b");
+  expect(result).not.toContain("Usage unavailable");
 });

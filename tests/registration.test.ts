@@ -194,7 +194,7 @@ describe("widget placement", () => {
     expect(harness.lastStatus()).toBeUndefined();
   });
 
-  it("colours each percentage and truncates to the width", async () => {
+  it("colours each percentage and wraps without dropping text", async () => {
     const harness = makeHarness();
     await settle(harness);
 
@@ -202,7 +202,12 @@ describe("widget placement", () => {
       "{dim|Usage: }{dim|5h }{success|97%}{dim| left}{dim| · }{dim|wk }{success|99%}{dim| left}" +
         "{dim| · }{dim|mo }{success|99%}{dim| left}{dim| · ↺ 2h3m - 9/22 14:03}",
     );
-    expect(renderWidget(harness.lastWidget(), 20)).toMatch(/\{dim\|\.\.\./);
+    const lines = (harness.lastWidget() as WidgetFactory)(undefined, theme).render(20);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.join("")).not.toContain("...");
+    expect(lines.join("").replace(/\s/g, "")).toBe(
+      renderWidget(harness.lastWidget()).replace(/\s/g, ""),
+    );
   });
 
   it("hides the reading for another provider", async () => {

@@ -26,7 +26,7 @@ When [hyird/pi-multiprovider](https://github.com/hyird/pi-multiprovider) is inst
 
 Queries do not switch accounts. Inactive OAuth refreshes stay in the saved account pool. A removed account cannot be resolved for a new request; a report also omits accounts removed while it was loading when the account list can be refreshed. A temporary account-storage error does not discard the rest of the report. Update both extensions to enable this integration.
 
-When available, usage headings and the footer show the account email instead of its saved label. Emails come from existing usage/profile responses or OAuth token email claims; no extra profile request is made. Missing or invalid email falls back to the saved label. Email is display metadata only: accounts with the same email remain separate. Native `/login` automatically adds accounts with the updated multiprovider extension, so no manual label is required.
+When available, usage headings and the footer show the account email instead of its saved label. Emails come from existing usage/profile responses or OAuth token email claims; no extra profile request is made. Missing or invalid email falls back to the saved label. Email is display metadata only: accounts with the same email remain separate. The updated multiprovider extension also receives the email for its switch menu, with a credential check to ignore stale responses. Native `/login` automatically adds accounts, so no manual label is required. Emails and labels are kept in full; the below-editor widget wraps on narrow terminals instead of adding ellipses.
 
 To update:
 

@@ -1,8 +1,5 @@
 import { truncateToWidth as truncateTerminalText } from "@earendil-works/pi-tui";
 
-/** Longest pooled account label kept verbatim before it is elided. */
-const MAX_LABEL_LENGTH = 24;
-
 /** Keeps the widget on one line when the terminal is narrower than the reading. */
 export function truncateToWidth(value: string, width: number, ellipsis = "..."): string {
   return truncateTerminalText(value, width, ellipsis);
@@ -26,5 +23,5 @@ export function sanitizeLabel(label: string): string | undefined {
   ).join("");
   const trimmed = flattened.replace(/\s+/g, " ").trim();
   if (!trimmed) return undefined;
-  return trimmed.length > MAX_LABEL_LENGTH ? `${trimmed.slice(0, MAX_LABEL_LENGTH - 1)}…` : trimmed;
+  return trimmed;
 }
