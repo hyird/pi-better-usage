@@ -1,5 +1,6 @@
 import type { UsageConfig } from "./config.ts";
 import type { UsageCredential } from "./credential.ts";
+import { awaitWithAbort } from "./abort.ts";
 import { accountEmail } from "./account-identity.ts";
 import { clampPercent, formatPercent, sanitizeLabel } from "./format.ts";
 import { USAGE_URL, WINDOW_LABELS, WINDOW_NAMES, type WindowKey } from "./identity.ts";
@@ -52,12 +53,13 @@ export function retryAfterMs(value: string | null, now = Date.now()): number | u
 /* ----------------------------------------------------------------- parser -- */
 
 function boundedStatus(value: unknown): string {
-  if (typeof value !== "string") return "ok";
+  if (value === undefined) return "ok";
+  if (typeof value !== "string") return "unknown";
   const status = value.trim();
-  if (!status || status.length > MAX_STATUS_LENGTH) return "ok";
+  if (!status || status.length > MAX_STATUS_LENGTH) return "unknown";
   for (const char of status) {
     const code = char.charCodeAt(0);
-    if (code < 0x21 || code > 0x7e) return "ok";
+    if (code < 0x21 || code > 0x7e) return "unknown";
   }
   return status;
 }
@@ -88,7 +90,13 @@ export function parseUsagePayload(data: unknown, now = Date.now()): UsageSnapsho
     const raw = (usage as Record<string, unknown>)[key];
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const record = raw as { status?: unknown; percent?: unknown; resetsAt?: unknown };
-    if (typeof record.percent !== "number" || !Number.isFinite(record.percent)) continue;
+    // Negative usage is invalid; clamping it to zero would claim a full quota.
+    if (
+      typeof record.percent !== "number" ||
+      !Number.isFinite(record.percent) ||
+      record.percent < 0
+    )
+      continue;
     windows[key] = {
       status: boundedStatus(record.status),
       percentUsed: clampPercent(record.percent),
@@ -132,6 +140,7 @@ export type UsageResponse = {
   ok: boolean;
   status: number;
   headers: { get(name: string): string | null };
+  body?: ReadableStream<Uint8Array> | null;
   json(): Promise<unknown>;
 };
 
@@ -139,6 +148,46 @@ export type FetchLike = (
   input: string,
   init?: { headers?: Record<string, string>; signal?: AbortSignal; redirect?: "error" },
 ) => Promise<UsageResponse>;
+
+/** Bound body reads even when Content-Length is absent or a custom transport ignores abort. */
+export async function readJsonResponse(
+  response: UsageResponse,
+  callerSignal?: AbortSignal,
+): Promise<unknown> {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
+  try {
+    if (!response.body || typeof response.body.getReader !== "function")
+      return await awaitWithAbort(response.json(), signal);
+    const reader = response.body.getReader();
+    let done = false;
+    try {
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      while (true) {
+        const part = await awaitWithAbort(reader.read(), signal);
+        if (part.done) break;
+        size += part.value.byteLength;
+        if (size > MAX_RESPONSE_BYTES)
+          throw new UsageError("oversize", "Usage response is too large.");
+        chunks.push(part.value);
+      }
+      done = true;
+      return JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
+    } finally {
+      if (!done) void reader.cancel().catch(() => undefined);
+      try {
+        reader.releaseLock();
+      } catch {
+        /* An interrupted read may still hold the lock. */
+      }
+    }
+  } catch (error) {
+    callerSignal?.throwIfAborted();
+    if (timeout.aborted) throw new UsageError("transport", "Usage response timed out.");
+    throw error;
+  }
+}
 
 /** Retry one failed connection without replaying HTTP errors or a caller cancellation. */
 export async function fetchWithTransportRetry(
@@ -152,7 +201,7 @@ export async function fetchWithTransportRetry(
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
     try {
-      return await fetchImpl(url, { headers, signal, redirect: "error" });
+      return await awaitWithAbort(fetchImpl(url, { headers, signal, redirect: "error" }), signal);
     } catch (error) {
       if (callerSignal?.aborted || attempt === 1) throw error;
     }
@@ -177,6 +226,7 @@ export async function fetchUsage(
       options.signal,
     );
   } catch {
+    options.signal?.throwIfAborted();
     throw new UsageError("transport", "OpenCode Go usage request failed or timed out.");
   }
   if (!response.ok)
@@ -191,8 +241,10 @@ export async function fetchUsage(
   }
   let payload: unknown;
   try {
-    payload = await response.json();
-  } catch {
+    payload = await readJsonResponse(response, options.signal);
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    if (error instanceof UsageError) throw error;
     throw new UsageError("invalid", "OpenCode Go usage returned an invalid body.");
   }
   return parseUsagePayload(payload, options.now ?? Date.now());

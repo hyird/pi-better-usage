@@ -49,6 +49,17 @@ describe("subscription payloads", () => {
     expect(result.windows.rolling).toMatchObject({ percentUsed: 23, resetsAt: NOW + 120000 });
     expect(result.windows.weekly).toMatchObject({ percentUsed: 72, resetsAt: NOW + 86400_000 });
   });
+  it.each([0, NOW / 1000 - 86400])(
+    "uses a valid relative Codex reset when absolute reset %s is unusable",
+    (absolute) => {
+      const data = {
+        rate_limit: {
+          primary_window: { used_percent: 23, reset_at: absolute, reset_after_seconds: 120 },
+        },
+      };
+      expect(parseOpenAIUsage(data, NOW).windows.rolling?.resetsAt).toBe(NOW + 120000);
+    },
+  );
   it("recognizes a weekly-only primary window", () => {
     const result = parseOpenAIUsage(
       { rate_limit: { primary_window: codex.rate_limit.secondary_window } },
@@ -57,6 +68,26 @@ describe("subscription payloads", () => {
     expect(result.windows.rolling).toBeUndefined();
     expect(result.windows.weekly?.percentUsed).toBe(72);
   });
+  it.each([
+    [18000, 86400, "5h", "24h"],
+    [604800, 1209600, "168h", "336h"],
+  ])(
+    "keeps both Codex windows when durations share a category",
+    (primarySeconds, secondarySeconds, primaryLabel, secondaryLabel) => {
+      const result = parseOpenAIUsage(
+        {
+          rate_limit: {
+            primary_window: { used_percent: 23, limit_window_seconds: primarySeconds },
+            secondary_window: { used_percent: 72, limit_window_seconds: secondarySeconds },
+          },
+        },
+        NOW,
+      );
+      expect(result.windows.rolling).toMatchObject({ percentUsed: 23 });
+      expect(result.windows.weekly).toMatchObject({ percentUsed: 72, label: secondaryLabel });
+      if (primarySeconds !== 18000) expect(result.windows.rolling?.label).toBe(primaryLabel);
+    },
+  );
   it("uses the separate Spark quota and rejects a missing Spark bucket", () => {
     const data = {
       ...codex,
@@ -89,6 +120,27 @@ describe("subscription payloads", () => {
       status: "ok",
       resetsAt: Date.parse("2026-09-27T12:00:00Z"),
     });
+  });
+  it.each(["seconds", "milliseconds"])("reads a numeric Grok reset time in %s", (unit) => {
+    const end = NOW + 2 * 86400_000;
+    const data = {
+      config: {
+        creditUsagePercent: 37,
+        currentPeriod: { type: "WEEKLY", end: unit === "seconds" ? end / 1000 : end },
+      },
+    };
+    expect(parseGrokUsage(data, NOW).windows.weekly?.resetsAt).toBe(end);
+  });
+  it("uses Grok's billing end when the period end is invalid", () => {
+    const end = "2026-10-01T00:00:00Z";
+    const data = {
+      config: {
+        creditUsagePercent: 37,
+        currentPeriod: { type: "WEEKLY", end: "invalid" },
+        billingPeriodEnd: end,
+      },
+    };
+    expect(parseGrokUsage(data, NOW).windows.weekly?.resetsAt).toBe(Date.parse(end));
   });
   it("derives legacy monthly usage only when a positive limit exists", () => {
     const config = {
@@ -199,6 +251,19 @@ describe("subscription requests", () => {
     ).rejects.toMatchObject({ kind: "oversize" });
     expect(json).not.toHaveBeenCalled();
   });
+  it("rejects an OpenAI response whose stream exceeds the limit without a size header", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(256 * 1024 + 1));
+        controller.close();
+      },
+    });
+    await expect(
+      fetchOpenAIUsage(credential, {
+        fetchImpl: async () => ({ ...ok({}), body }),
+      }),
+    ).rejects.toMatchObject({ kind: "oversize" });
+  });
   it("passes cancellation into the request", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -208,6 +273,7 @@ describe("subscription requests", () => {
     });
     await expect(
       fetchOpenAIUsage(credential, { fetchImpl, signal: controller.signal }),
-    ).rejects.toMatchObject({ kind: "transport" });
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { awaitWithAbort } from "./abort.ts";
 import { extractApiKey, type CredentialResolver, type UsageCredential } from "./credential.ts";
 import { piAgentDir, expandTildePath } from "./paths.ts";
 import { UsageError } from "./usage.ts";
-import { emailFromToken } from "./account-identity.ts";
+import { accountEmail, emailFromToken } from "./account-identity.ts";
 
 export const GROK_PROVIDERS = ["xai", "xai-oauth", "xai-auth"];
 export function object(value: unknown): Record<string, unknown> {
@@ -40,6 +41,7 @@ function credential(
   label: string,
   codex: boolean,
   id?: string,
+  savedEmail?: string,
 ): UsageCredential | null {
   let accountId = id;
   if (codex) {
@@ -56,7 +58,7 @@ function credential(
   return {
     apiKey: token,
     accountId,
-    email: emailFromToken(token),
+    email: emailFromToken(token) ?? accountEmail(savedEmail),
     source,
     label,
     fingerprint: createHash("sha256")
@@ -82,59 +84,102 @@ export async function resolveSubscriptionCredential(
 ): Promise<UsageCredential | null> {
   const env = resolver.env ?? process.env;
   const codex = kind === "openai";
+  const selectedGrokProvider =
+    !codex && GROK_PROVIDERS.includes(ctx.model?.provider ?? "") ? ctx.model!.provider : undefined;
   const ids = codex
     ? ["openai-codex"]
-    : GROK_PROVIDERS.includes(ctx.model?.provider ?? "")
-      ? [ctx.model!.provider]
+    : selectedGrokProvider
+      ? [selectedGrokProvider]
       : GROK_PROVIDERS;
   const service = resolver.service?.();
-  const stored = readJson(join(piAgentDir(env), "auth.json"));
+  let stored: Record<string, unknown> | undefined;
   const registry = ctx.modelRegistry;
   for (const id of ids) {
     signal?.throwIfAborted();
     if (service) {
       try {
-        const active = await service.getActiveAccount(id, ctx);
-        if (active && active.id !== "pi:default" && active.authKind !== "oauth") return null;
-        const resolved = await service.resolveActiveAccountAuth(id, ctx, signal);
+        const active = await awaitWithAbort(service.getActiveAccount(id, ctx), signal);
+        signal?.throwIfAborted();
+        if (active && active.id !== "pi:default" && active.authKind !== "oauth") {
+          // A selected model owns this alias. For a general Grok report, a
+          // different alias may still have a subscription login.
+          if (codex || ctx.model?.provider === id) return null;
+          continue;
+        }
+        const resolved = await awaitWithAbort(
+          service.resolveActiveAccountAuth(id, ctx, signal),
+          signal,
+        );
+        signal?.throwIfAborted();
         if (resolved?.accessToken) {
+          if (resolved.slotId && resolved.authKind) {
+            if (resolved.slotId !== active?.id || resolved.authKind !== "oauth") return null;
+          } else {
+            // Older account services do not return the final account identity.
+            // Recheck it after authentication so a switch cannot change the type.
+            const current = await awaitWithAbort(service.getActiveAccount(id, ctx), signal);
+            signal?.throwIfAborted();
+            if (
+              current?.id !== active?.id ||
+              current?.authKind !== active?.authKind ||
+              (current && current.id !== "pi:default" && current.authKind !== "oauth")
+            )
+              return null;
+          }
           const result = credential(
             resolved.accessToken,
             "multilogin",
             resolved.label || "pooled",
             codex,
+            undefined,
+            resolved.email,
           );
           if (!result) throw new Error("Invalid pooled credential");
-          return result;
+          return codex ? result : { ...result, providerId: id };
         }
         if (active && active.id !== "pi:default") throw new Error("Missing pooled credential");
       } catch {
+        signal?.throwIfAborted();
         throw new UsageError(
           "auth",
           `${kind} pooled account is unavailable. Sign in again with /login ${id}.`,
         );
       }
     }
-    const entry = object(stored[id]);
+    // A pooled credential already resolved above needs no synchronous read of
+    // auth.json. Reuse one snapshot only if local fallback is necessary.
+    const entry = object((stored ??= readJson(join(piAgentDir(env), "auth.json")))[id]);
     // xAI API keys do not represent a SuperGrok subscription.
     let usesOAuth = codex || entry.type === "oauth";
+    let runtimeOAuth: boolean | undefined;
+    const selectedGrok = selectedGrokProvider === id;
     try {
       if (!codex) {
-        if (ctx.model?.provider === id && registry.isUsingOAuth)
-          usesOAuth = registry.isUsingOAuth(ctx.model);
+        if (selectedGrok && ctx.model && registry.isUsingOAuth) {
+          runtimeOAuth = registry.isUsingOAuth(ctx.model);
+          usesOAuth = runtimeOAuth;
+        }
       }
       if (usesOAuth) {
-        const auth = await registry.getProviderAuth?.(id);
-        const token = extractApiKey(auth) ?? (await registry.getApiKeyForProvider?.(id));
+        const auth = registry.getProviderAuth
+          ? await awaitWithAbort(registry.getProviderAuth(id), signal)
+          : undefined;
+        const token =
+          extractApiKey(auth) ??
+          (registry.getApiKeyForProvider
+            ? await awaitWithAbort(registry.getApiKeyForProvider(id), signal)
+            : undefined);
+        signal?.throwIfAborted();
         if (token) {
           const result = credential(token, "pi", "pi", codex);
-          if (result) return result;
+          if (result) return codex ? result : { ...result, providerId: id };
         }
       }
     } catch {
+      signal?.throwIfAborted();
       /* Local OAuth fallback below; never execute auth.json shell values. */
     }
-    if (!codex && ctx.model?.provider === id && entry.type === "api_key") return null;
+    if (selectedGrok && (runtimeOAuth === false || entry.type === "api_key")) return null;
     if (entry.type === "oauth" && !expired(entry.expires, Date.now())) {
       const token = text(entry.access);
       if (token) {
@@ -145,10 +190,14 @@ export async function resolveSubscriptionCredential(
           codex,
           text(entry.accountId) ?? text(entry.account_id),
         );
-        if (result) return result;
+        if (result) return codex ? result : { ...result, providerId: id };
       }
     }
+    // A configured selected OAuth login must not silently use a different
+    // Grok CLI account when its own token is expired or unavailable.
+    if (selectedGrok && (runtimeOAuth === true || entry.type === "oauth")) return null;
   }
+  signal?.throwIfAborted();
   if (!codex) {
     const data = readJson(
       env.PI_GROK_AUTH_PATH
@@ -163,11 +212,17 @@ export async function resolveSubscriptionCredential(
       const entry = object(data[scope]);
       const token = text(entry.key) ?? text(entry.access_token) ?? text(entry.token);
       if (token && !expired(entry.expires_at, Date.now()))
-        return credential(token, "authFile", "Grok CLI", false);
+        return {
+          ...credential(token, "authFile", "Grok CLI", false)!,
+          providerId: selectedGrokProvider,
+        };
     }
     const token = text(data.access_token) ?? text(data.token);
     if (token && !expired(data.expires_at, Date.now()))
-      return credential(token, "authFile", "Grok CLI", false);
+      return {
+        ...credential(token, "authFile", "Grok CLI", false)!,
+        providerId: selectedGrokProvider,
+      };
   }
   return null;
 }

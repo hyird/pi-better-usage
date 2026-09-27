@@ -9,6 +9,7 @@ import { GROK_PROVIDERS, object, resolveSubscriptionCredential } from "./subscri
 import {
   fetchUsage,
   fetchWithTransportRetry,
+  readJsonResponse,
   retryAfterMs,
   UsageError,
   type FetchLike,
@@ -45,8 +46,23 @@ function percent(value: unknown): value is number {
   return finite(value) && value >= 0 && value <= 100;
 }
 function resetAt(value: unknown, now: number): number | null {
-  const parsed = typeof value === "string" ? Date.parse(value) : finite(value) ? value : NaN;
-  return Number.isFinite(parsed) && Math.abs(parsed - now) < 400 * 86400_000 ? parsed : null;
+  const nearby = (timestamp: number) =>
+    Number.isFinite(timestamp) && Math.abs(timestamp - now) < 400 * 86400_000;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return nearby(parsed) ? parsed : null;
+  }
+  if (!finite(value)) return null;
+  if (nearby(value)) return value;
+  const seconds = value * 1000;
+  return nearby(seconds) ? seconds : null;
+}
+function preferredReset(primary: unknown, fallback: unknown, now: number): number | null {
+  const first = resetAt(primary, now);
+  const second = resetAt(fallback, now);
+  if (first !== null && first >= now) return first;
+  if (second !== null && second >= now) return second;
+  return first ?? second;
 }
 function requireWindows(snapshot: UsageSnapshot): UsageSnapshot {
   if (!Object.keys(snapshot.windows).length)
@@ -71,27 +87,45 @@ export function parseOpenAIUsage(data: unknown, now = Date.now(), modelId?: stri
   const snapshot: UsageSnapshot = { capturedAt: now, providerLabel: "OpenAI Codex", windows: {} };
   const email = accountEmail(root.email);
   if (email) snapshot.accountEmail = email;
+  const parsed: Array<{
+    key: "rolling" | "weekly";
+    seconds?: number;
+    window: UsageWindow;
+  }> = [];
   for (const [field, fallback] of [
     ["primary_window", "rolling"],
     ["secondary_window", "weekly"],
   ] as const) {
     const raw = object(bucket[field]);
     if (!percent(raw.used_percent)) continue;
-    const seconds = raw.limit_window_seconds;
-    const key = finite(seconds) ? (seconds >= 6 * 86400 ? "weekly" : "rolling") : fallback;
-    const reset = finite(raw.reset_at)
+    const seconds = finite(raw.limit_window_seconds) ? raw.limit_window_seconds : undefined;
+    const key = seconds === undefined ? fallback : seconds >= 6 * 86400 ? "weekly" : "rolling";
+    const absolute = finite(raw.reset_at)
       ? raw.reset_at * (raw.reset_at < 100_000_000_000 ? 1000 : 1)
-      : finite(raw.reset_after_seconds)
-        ? now + raw.reset_after_seconds * 1000
-        : null;
-    snapshot.windows[key] = {
-      percentUsed: raw.used_percent,
-      resetsAt: resetAt(reset, now),
-      status: bucket.limit_reached === true || bucket.allowed === false ? "limited" : "ok",
-      ...(finite(seconds) && seconds !== 18000 && seconds !== 604800
-        ? { label: `${Math.round(seconds / 3600)}h` }
-        : {}),
-    };
+      : null;
+    const relative = finite(raw.reset_after_seconds) ? now + raw.reset_after_seconds * 1000 : null;
+    parsed.push({
+      key,
+      seconds,
+      window: {
+        percentUsed: raw.used_percent,
+        resetsAt: preferredReset(absolute, relative, now),
+        status: bucket.limit_reached === true || bucket.allowed === false ? "limited" : "ok",
+      },
+    });
+  }
+  // Both provider fields are distinct quotas, even when their durations map to the same display slot.
+  const first = parsed[0];
+  const second = parsed[1];
+  if (first && second && first.key === second.key) {
+    first.key = "rolling";
+    second.key = "weekly";
+  }
+  for (const { key, seconds, window } of parsed) {
+    if (seconds !== undefined && seconds !== (key === "rolling" ? 18000 : 604800)) {
+      window.label = `${Math.round(seconds / 3600)}h`;
+    }
+    snapshot.windows[key] = window;
   }
   return requireWindows(snapshot);
 }
@@ -123,7 +157,7 @@ export function parseGrokUsage(data: unknown, now = Date.now()): UsageSnapshot {
   const window: UsageWindow = {
     percentUsed: used,
     status: "ok",
-    resetsAt: resetAt(period.end ?? config.billingPeriodEnd, now),
+    resetsAt: preferredReset(period.end, config.billingPeriodEnd, now),
   };
   if (key === "rolling") window.label = "period";
   return { capturedAt: now, providerLabel: "Grok", windows: { [key]: window } };
@@ -157,11 +191,14 @@ async function requestJson(
     if (Number(response.headers.get("content-length")) > 256 * 1024)
       throw new UsageError("oversize", `${name} usage response is too large.`);
     try {
-      return await response.json();
-    } catch {
+      return await readJsonResponse(response, options.signal);
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (error instanceof UsageError) throw error;
       throw new UsageError("invalid", `${name} usage returned invalid JSON.`);
     }
   } catch (error) {
+    options.signal?.throwIfAborted();
     if (error instanceof UsageError) throw error;
     // Fetch errors may contain headers/tokens. Never propagate arbitrary messages to the UI.
     throw new UsageError(

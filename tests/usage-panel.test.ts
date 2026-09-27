@@ -176,6 +176,31 @@ it("opens a focused overlay immediately, without printing to chat", async () => 
   expect(notify).not.toHaveBeenCalled();
 });
 
+it("cancels its pending load when the overlay closes", async () => {
+  let component!: UsagePanel;
+  let loadingSignal: AbortSignal | undefined;
+  const custom = vi.fn(
+    (factory) =>
+      new Promise<void>((resolve) => {
+        component = factory({ terminal: { rows: 30 }, requestRender: vi.fn() }, theme, {}, resolve);
+      }),
+  );
+  const ctx = { mode: "tui", ui: { custom, notify: vi.fn() } } as unknown as ExtensionContext;
+  const task = showUsagePanel(ctx, async (signal) => {
+    loadingSignal = signal;
+    await new Promise<void>((resolve) =>
+      signal.addEventListener("abort", () => resolve(), { once: true }),
+    );
+    return "late result";
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(loadingSignal?.aborted).toBe(false);
+  component.handleInput("\u001b");
+  await task;
+  expect(loadingSignal?.aborted).toBe(true);
+});
+
 it("keeps text output for RPC clients that cannot display a terminal panel", async () => {
   const notify = vi.fn();
   const custom = vi.fn();
@@ -185,4 +210,14 @@ it("keeps text output for RPC clients that cannot display a terminal panel", asy
   );
   expect(custom).not.toHaveBeenCalled();
   expect(notify).toHaveBeenCalledWith("usage report", "info");
+});
+
+it("reports load failures to RPC clients without rejecting the command", async () => {
+  const notify = vi.fn();
+  await expect(
+    showUsagePanel({ mode: "rpc", ui: { notify } } as unknown as ExtensionContext, async () => {
+      throw new Error("secret upstream error");
+    }),
+  ).resolves.toBeUndefined();
+  expect(notify).toHaveBeenCalledWith("Could not load usage. Try /usage again.", "warning");
 });

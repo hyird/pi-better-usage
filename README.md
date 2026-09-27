@@ -24,7 +24,7 @@ Run `/reload` inside Pi, then `/usage`.
 
 When [hyird/pi-multiprovider](https://github.com/hyird/pi-multiprovider) is installed, `/usage` reports **every saved account**, with its label and a `[Current]` marker based on Pi's `auth.json`. A current login missing from the saved pool appears separately as `Unmanaged [Current]`. Unsupported providers or failed accounts get their own message without hiding the other results. Background display shows the current account only; account switches immediately clear old quota and refresh its label and usage.
 
-Queries do not switch accounts. Inactive OAuth refreshes stay in the saved account pool. A removed account cannot be resolved for a new request; a report also omits accounts removed while it was loading when the account list can be refreshed. A temporary account-storage error does not discard the rest of the report. Update both extensions to enable this integration.
+Queries do not switch accounts. Inactive OAuth refreshes stay in the saved account pool. A removed account cannot be resolved for a new request; a report also omits accounts removed while it was loading when the account list can be refreshed. A temporary account-storage error does not discard the rest of the report. Reports are cached only after the final account list is verified; an unverified report is shown once and checked again on the next request. Update both extensions to enable this integration.
 
 When available, usage headings and the footer show the account email instead of its saved label. Emails come from existing usage/profile responses or OAuth token email claims; no extra profile request is made. Missing or invalid email falls back to the saved label. Email is display metadata only: accounts with the same email remain separate. The updated multiprovider extension also receives the email for its switch menu, with a credential check to ignore stale responses. Native `/login` automatically adds accounts, so no manual label is required. Emails and labels are kept in full; the below-editor widget wraps on narrow terminals instead of adding ellipses.
 
@@ -42,9 +42,9 @@ Run `/reload` again to load the update.
 /usage
 ```
 
-In the terminal, `/usage` opens a focused overlay instead of printing the report into chat. Press **Esc** to close it and return to the editor, including while usage is still loading. Use the **mouse wheel** inside the panel, **↑ / ↓**, **Page Up / Page Down**, or **Home / End** to scroll through longer reports. The footer shows the visible line range; scrolling stops at the report's edges without moving the chat behind it.
+In the terminal, `/usage` opens a focused overlay instead of printing the report into chat. Press **Esc** to close it and return to the editor, including while usage is still loading. Closing during a saved-account lookup cancels the panel's report; other consumers of a shared quota request continue. Use the **mouse wheel** inside the panel, **↑ / ↓**, **Page Up / Page Down**, or **Home / End** to scroll through longer reports. The footer shows the visible line range; scrolling stops at the report's edges without moving the chat behind it.
 
-`/usage` reuses matching cached reports when available; opening it does not force a fresh query. Without a saved-account report, it gathers reports for all three services in parallel. Each service or saved account shows its own result or a sign-in/error message, so one unavailable provider does not block the others.
+`/usage` reuses matching saved-account reports when available. Without a saved-account report, it rechecks each service's current credential and gathers all three reports in parallel. Fresh quota readings for unchanged credentials are reused without another HTTP request; expired readings are refreshed before they are shown. Each service or saved account shows its own result or a sign-in/error message, so one unavailable provider does not block the others.
 
 Example output:
 
@@ -83,17 +83,17 @@ The current provider's usage appears below the editor:
 Usage: 5h 75% left · wk 60% left · ↺ 5d0h - 9/27 21:30 · work
 ```
 
-The account label appears only for a pooled account. The reset countdown belongs to the displayed window closest to its limit.
+The account label appears only for a pooled account. The reset countdown belongs to the displayed window closest to its limit. A malformed status returned by the usage endpoint appears as `!unknown` instead of being shown as healthy.
 
-- The active provider refreshes every 60 seconds by default. Turn completion also checks whether the cache is due for an update. Inactive providers do not keep polling timers.
+- The active provider refreshes every 60 seconds by default. Turn completion also checks whether the cache is due for an update. Without an account-change subscription, it rechecks the current credential so a native login can replace a fresh reading or recover from the previous account's backoff; unchanged credentials still use cached quota. Inactive providers do not keep polling timers.
 - Model and provider switches reuse matching fresh quota. Switching models within the same quota bucket does not restart an in-flight query or request another reading while the cache is fresh. Expired readings refresh in the background; a provider without cached data needs its first query to finish.
 - The footer and saved-account reports share quota readings and in-flight requests for the same provider, credential, account ID, and quota bucket. Account labels remain separate, and new credentials or a different bucket cannot reuse another account's quota.
-- `/usage` shows matching cached data immediately. When that data is older than `usage.refreshIntervalMs`, it requests a background refresh; saved-account reports only schedule this refresh when `usage.enabled` is true. If no matching report is cached, the command waits for a report to load.
-- The open panel shows a snapshot and does not update when a background refresh finishes. Close it and run `/usage` again after the refresh to see the updated cache. Reopening before the refresh finishes can show the same data. RPC clients retain text output.
+- `/usage` shows matching saved-account reports immediately. When a saved report is older than `usage.refreshIntervalMs`, it requests a background refresh if `usage.enabled` is true. If no matching saved report is cached, the command waits for a report to load and rechecks the account list before starting another report. Individual service reports verify the current login and wait for expired quota readings; a failed refresh shows an unavailable result.
+- The open panel shows a snapshot and does not update when a background saved-account refresh finishes. Close it and run `/usage` again after the refresh to see the updated cache. Reopening before the refresh finishes can show the same data. RPC clients retain text output.
 - Account changes and new sessions clear the cache. Independent quota buckets, such as Spark, do not reuse the default bucket's reading.
-- Session shutdown/reload cancels active requests and stops queued account lookups. Account or quota-bucket changes cancel obsolete reports. If the footer and a report share a request, closing only one consumer leaves the other consumer's request running.
+- Session shutdown/reload cancels active requests and stops queued account lookups. A cancelled lookup also stops waiting for Pi's credential resolver or a saved-account roster read if that API cannot accept a cancellation signal. Account or quota-bucket changes cancel obsolete reports. If the footer and a report share a request, closing only one consumer leaves the other consumer's request running.
 - Failed queries hide the footer reading; `/usage` shows the error. Missing data is never presented as unused quota.
-- Failed lookups back off before retrying: authentication errors wait 10 minutes; HTTP 429 starts at 60 seconds; other request failures start at 15 seconds. Repeated request failures increase the delay up to 5 minutes, and a longer server `Retry-After` is honored. Repeated `/usage` calls and same-bucket model switches respect this delay. Account changes and new sessions reset it; missing credentials are rechecked after 60 seconds.
+- Failed lookups back off before retrying: authentication errors wait 10 minutes; HTTP 429 starts at 60 seconds; other request failures start at 15 seconds. Repeated request failures increase the delay up to 5 minutes, and a longer server `Retry-After` is honored. Repeated `/usage` calls and same-bucket model switches respect this delay. Account changes and new sessions reset it; missing credentials are rechecked after 60 seconds, or on the next turn after native `auth.json` changes.
 - Unchanged footer content does not reinstall the widget. Report scrolling reuses wrapped lines until its text or width changes; terminal height and theme changes still render correctly.
 - OMP child processes (`PI_OMP_CHILD=1`) skip this extension's registration, account-service requests, and refresh timers. Usage tracking stays in the parent session; normal TUI and RPC sessions are unchanged.
 
@@ -107,7 +107,7 @@ The account label appears only for a pooled account. The reset countdown belongs
 
 OpenAI and Grok require subscription OAuth credentials; ordinary API keys cannot report their subscription quota.
 
-When pi-multiprovider is installed, the extension uses the active or pinned account and responds to account-switch notifications. Otherwise, it uses Pi's credential resolver and stored credentials. Grok can also read `~/.grok/auth.json`; set `PI_GROK_AUTH_PATH` to use a different location.
+When pi-multiprovider is installed, the extension uses the active or pinned account and responds to account-switch notifications. If an active saved account cannot provide a credential, its usage stays unavailable instead of showing another account's quota. Otherwise, it uses Pi's credential resolver and stored credentials. Stored command keys and environment templates require Pi to resolve them; if that fails, usage stays unavailable instead of sending the template or borrowing another environment key. Grok can also read `~/.grok/auth.json`; set `PI_GROK_AUTH_PATH` to use a different location. A selected Pi Grok login with an expired OAuth credential does not borrow the Grok CLI login; a runtime API-key selection also does not use a stale stored OAuth token.
 
 Credentials are never written to disk by this extension or included in reports. If authentication expires, sign in again.
 

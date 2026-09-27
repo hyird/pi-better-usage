@@ -120,3 +120,113 @@ it("keeps accounts separate when server emails match and falls back when missing
   expect(updateAccountEmail).toHaveBeenCalledWith("b", "same@example.com", "b");
   expect(result).not.toContain("Usage unavailable");
 });
+
+it("uses a saved email when the latest usage response omits it", async () => {
+  const account: SavedUsageAccount = {
+    id: "saved",
+    label: "default",
+    email: "saved@example.com",
+    providerId: "opencode-go",
+    authKind: "api_key",
+    active: true,
+  };
+  const updateAccountEmail = vi.fn(async () => {});
+  const service = {
+    resolveAccountAuth: async () => ({ accessToken: "fixture", label: "default" }),
+    updateAccountEmail,
+  } as unknown as MultiproviderService;
+  const ctx = {
+    model: { provider: "opencode-go", id: "fixture" },
+    modelRegistry: {},
+  } as unknown as ExtensionContext;
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    json: async () => ({ usage: { weekly: { percent: 10 } } }),
+  });
+  const result = await reportSavedAccounts(ctx, service, [account], DEFAULT_CONFIG, { fetchImpl });
+  expect(result).toContain("saved@example.com [Current]");
+  expect(updateAccountEmail).not.toHaveBeenCalled();
+});
+
+it("persists a response email through the resolved account when its runtime token was transformed", async () => {
+  const account: SavedUsageAccount = {
+    id: "opencode-go/work",
+    label: "work",
+    providerId: "opencode-go",
+    authKind: "api_key",
+    active: true,
+    credentialRevision: "saved-revision",
+  };
+  const updateEmail = vi.fn(async (_email: string) => {});
+  const updateAccountEmail = vi.fn(async () => {});
+  const service = {
+    listAccounts: async () => [account],
+    resolveAccountAuth: async () => ({
+      accessToken: "runtime-token",
+      label: "work",
+      credentialRevision: "saved-revision",
+      updateEmail,
+    }),
+    updateAccountEmail,
+  } as unknown as MultiproviderService;
+  const ctx = {
+    model: { provider: "opencode-go", id: "fixture" },
+    modelRegistry: {},
+  } as unknown as ExtensionContext;
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    json: async () => ({ email: "work@example.com", usage: { weekly: { percent: 10 } } }),
+  });
+  const result = await reportSavedAccounts(ctx, service, [account], DEFAULT_CONFIG, { fetchImpl });
+  expect(result).toContain("work@example.com");
+  expect(updateEmail).toHaveBeenCalledWith("work@example.com");
+  expect(updateAccountEmail).not.toHaveBeenCalled();
+});
+
+it("returns a usage report without waiting for optional email storage", async () => {
+  const account: SavedUsageAccount = {
+    id: "saved",
+    label: "default",
+    providerId: "opencode-go",
+    authKind: "api_key",
+    active: true,
+  };
+  let finish!: () => void;
+  const stored = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const updateAccountEmail = vi.fn(() => stored);
+  const service = {
+    listAccounts: async () => [account],
+    resolveAccountAuth: async () => ({ accessToken: "fixture", label: "default" }),
+    updateAccountEmail,
+  } as unknown as MultiproviderService;
+  const ctx = {
+    model: { provider: "opencode-go", id: "fixture" },
+    modelRegistry: {},
+  } as unknown as ExtensionContext;
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    json: async () => ({ email: "fresh@example.com", usage: { weekly: { percent: 10 } } }),
+  });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const report = await Promise.race([
+      reportSavedAccounts(ctx, service, [account], DEFAULT_CONFIG, { fetchImpl }),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("Report waited for email storage")), 500);
+      }),
+    ]);
+    expect(report).toContain("fresh@example.com [Current]");
+    expect(updateAccountEmail).toHaveBeenCalledWith("saved", "fresh@example.com", "fixture");
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    finish();
+  }
+});

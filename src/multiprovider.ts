@@ -12,16 +12,30 @@ export const ACCOUNTS_SERVICE_EVENT = "pi-accounts:service";
 export type SavedUsageAccount = MultiproviderActiveAccount & {
   providerId: string;
   active: boolean;
+  email?: string;
+  credentialRevision?: string;
 };
 
 export type MultiproviderActiveAccount = { id: string; label: string; authKind: string };
 
-export type MultiproviderAccountAuth = { accessToken: string; label: string; source?: string };
+export type MultiproviderAccountAuth = {
+  accessToken: string;
+  label: string;
+  /** Persists email only while this resolved account still has the same credential. */
+  updateEmail?: (email: string) => Promise<void>;
+  email?: string;
+  source?: string;
+  credentialRevision?: string;
+  slotId?: string;
+  authKind?: string;
+};
 
 export type MultiproviderAccountChangedEvent = {
   providerId: string;
-  account: MultiproviderActiveAccount | undefined;
-  ctx: ExtensionContext;
+  account?: MultiproviderActiveAccount;
+  ctx?: ExtensionContext;
+  /** Display metadata changed; the provider credential and quota owner did not. */
+  kind?: "metadata";
 };
 
 export type MultiproviderServiceContext = Pick<

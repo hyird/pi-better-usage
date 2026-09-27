@@ -1,3 +1,6 @@
+import { statSync } from "node:fs";
+import { join } from "node:path";
+import { awaitWithAbort } from "./src/abort.ts";
 import { showUsagePanel } from "./src/usage-panel.ts";
 import type {
   ExtensionAPI,
@@ -18,7 +21,8 @@ import {
   type SavedUsageAccount,
 } from "./src/multiprovider.ts";
 import { reportSavedAccounts } from "./src/account-report.ts";
-import { UsageQueryCache, failureDelay, quotaScope } from "./src/query-cache.ts";
+import { UsageQueryCache, failureDelay, freshWithin, quotaScope } from "./src/query-cache.ts";
+import { piAgentDir } from "./src/paths.ts";
 import {
   accountLabel,
   formatDetail,
@@ -61,6 +65,7 @@ export function isOpencodeGoModel(ctx: Pick<ExtensionContext, "model">): boolean
 
 type CacheState = {
   scope: string;
+  providerId?: string;
   credential: UsageCredential;
   snapshot: UsageSnapshot;
   fetchedAt: number;
@@ -83,13 +88,38 @@ export function registerProviderUsage(
   const env = options.env ?? process.env;
   const now = options.now ?? (() => Date.now());
   const queries = sharedQueries ?? new UsageQueryCache(options);
+  const authPath = join(piAgentDir(env), "auth.json");
+  const authRevision = (): string => {
+    try {
+      const file = statSync(authPath, { bigint: true });
+      return `${file.dev}:${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}`;
+    } catch (error) {
+      return `unavailable:${(error as NodeJS.ErrnoException).code ?? "unknown"}`;
+    }
+  };
 
   let config: UsageConfig = readConfig(env);
   let cache: CacheState | undefined;
   let lastError: string | undefined;
   let retryAt = 0;
+  let retryStartedAt = 0;
+  const inBackoff = (): boolean => {
+    const current = now();
+    return current >= retryStartedAt && current < retryAt;
+  };
+  const clearBackoff = (): void => {
+    retryAt = 0;
+    retryStartedAt = 0;
+  };
+  const setBackoff = (delay: number): void => {
+    retryStartedAt = now();
+    retryAt = retryStartedAt + delay;
+  };
   let failures = 0;
+  let attemptedIdentity: string | undefined;
+  let unresolvedAuthRevision: string | undefined;
   let lastStatusText: string | undefined;
+  let lastStatusUi: ExtensionContext["ui"] | undefined;
   /** Whether a widget is currently installed, so we know when to clear one. */
   let widgetInstalled = false;
   let widgetKey: string | undefined;
@@ -97,8 +127,19 @@ export function registerProviderUsage(
   let widgetTheme: Theme | undefined;
   let service: MultiproviderService | undefined;
   let unsubscribeAccount: (() => void) | undefined;
+  const releaseProviderSubscriptions = () => {
+    try {
+      unsubscribeAccount?.();
+    } catch {
+      /* A stale service must not block replacement. */
+    }
+    unsubscribeAccount = undefined;
+  };
   let timer: ReturnType<typeof setInterval> | undefined;
   let pendingRefresh: Promise<void> | undefined;
+  let pendingMetadataRefresh = false;
+  let pendingCredentialRefresh = false;
+  let pendingAuthRevision: string | undefined;
   let active = true;
   // Invalidate pending work on model/account/session changes.
   let generation = 0;
@@ -113,15 +154,19 @@ export function registerProviderUsage(
     refreshAbort?.abort();
     refreshAbort = undefined;
     pendingRefresh = undefined;
+    pendingMetadataRefresh = false;
+    pendingCredentialRefresh = false;
+    pendingAuthRevision = undefined;
   };
   /** Latest event ctx, so a late multilogin announcement can still refresh. */
   let lastCtx: ExtensionContext | undefined;
 
   const setStatus = (ctx: ExtensionContext, text: string | undefined): void => {
-    if (text === lastStatusText) return;
-    lastStatusText = text;
+    if (text === lastStatusText && ctx.ui === lastStatusUi) return;
     try {
       ctx.ui.setStatus(statusKey, text);
+      lastStatusText = text;
+      lastStatusUi = ctx.ui;
     } catch {
       // A stale ctx after session replacement must not break the turn.
     }
@@ -202,38 +247,82 @@ export function registerProviderUsage(
    */
   const refresh = async (
     ctx: ExtensionContext,
-    mode: { force?: boolean; ignoreEligibility?: boolean } = {},
+    mode: { force?: boolean; ignoreEligibility?: boolean; recheckPending?: boolean } = {},
   ): Promise<void> => {
     if (!active) return;
     if (!config.enabled && !mode.ignoreEligibility) return;
     if (!mode.ignoreEligibility && !eligible(ctx)) return;
-    if (retryAt > now()) return;
+    if (inBackoff()) {
+      // A native login changes auth.json; retry unresolved credentials immediately,
+      // but do not repeat a failed auth lookup on every turn.
+      if (unresolvedAuthRevision !== undefined) {
+        if (!mode.force || authRevision() === unresolvedAuthRevision) return;
+      } else if (!mode.force) return;
+    }
     if (
       !mode.force &&
       cache?.scope === scopeFor(ctx.model?.provider, ctx.model?.id) &&
-      now() - cache.fetchedAt < config.refreshIntervalMs
+      freshWithin(cache.fetchedAt, now(), config.refreshIntervalMs)
     )
       return;
-    if (pendingRefresh) return pendingRefresh;
+    if (pendingRefresh) {
+      if (mode.recheckPending) {
+        pendingCredentialRefresh = true;
+        if (pendingAuthRevision !== undefined && authRevision() !== pendingAuthRevision) {
+          cache = undefined;
+          lastError = undefined;
+          render(lastCtx ?? ctx);
+        }
+      }
+      return pendingRefresh;
+    }
     const requestGeneration = generation;
     const scope = scopeFor(ctx.model?.provider, ctx.model?.id);
     refreshAbort = new AbortController();
     const signal = refreshAbort.signal;
+    const authRevisionAtStart = authRevision();
+    pendingAuthRevision = authRevisionAtStart;
     const work = (async () => {
+      let resolvedCredential = false;
+      const deferStale = (): boolean => {
+        if (!pendingCredentialRefresh && authRevision() === authRevisionAtStart) return false;
+        pendingCredentialRefresh = true;
+        cache = undefined;
+        lastError = undefined;
+        render(lastCtx ?? ctx);
+        return true;
+      };
       try {
         const credential = await provider.resolve(ctx, { service: () => service, env }, signal);
         if (requestGeneration !== generation) return;
+        if (deferStale()) return;
+        resolvedCredential = true;
         if (!credential) {
+          attemptedIdentity = undefined;
+          unresolvedAuthRevision = authRevisionAtStart;
           cache = undefined;
           lastError = `No ${provider.name} subscription credential. Use ${provider.loginHint}.`;
-          retryAt = now() + 60_000;
+          setBackoff(60_000);
           render(lastCtx ?? ctx);
           return;
+        }
+        unresolvedAuthRevision = undefined;
+        const identity = JSON.stringify([scope, credential.fingerprint, credential.accountId]);
+        // A rejected account keeps its cooldown, while a newly selected login
+        // can fetch immediately even if the previous account is in backoff.
+        if (identity === attemptedIdentity && inBackoff()) return;
+        if (identity !== attemptedIdentity) {
+          attemptedIdentity = identity;
+          clearBackoff();
+          failures = 0;
+          lastError = undefined;
         }
         // A pooled account switch changes the quota owner; never reuse its reading.
         if (
           cache &&
-          (cache.credential.fingerprint !== credential.fingerprint || cache.scope !== scope)
+          (cache.credential.fingerprint !== credential.fingerprint ||
+            cache.credential.accountId !== credential.accountId ||
+            cache.scope !== scope)
         ) {
           cache = undefined;
           render(ctx);
@@ -245,58 +334,108 @@ export function registerProviderUsage(
           ttl: config.refreshIntervalMs,
         });
         if (requestGeneration !== generation) return;
-        cache = { scope, credential, ...reading };
+        if (deferStale()) return;
+        cache = {
+          scope,
+          providerId:
+            credential.providerId ??
+            (provider.providerIds.length === 1
+              ? provider.providerIds[0]
+              : provider.providerIds.includes(ctx.model?.provider ?? "")
+                ? ctx.model?.provider
+                : undefined),
+          credential,
+          ...reading,
+        };
         lastError = undefined;
-        retryAt = 0;
+        clearBackoff();
         failures = 0;
         render(lastCtx ?? ctx);
       } catch (error) {
         if (requestGeneration !== generation) return;
+        if (deferStale()) return;
+        if (!resolvedCredential) {
+          attemptedIdentity = undefined;
+          unresolvedAuthRevision = authRevisionAtStart;
+        }
         const usageError =
           error instanceof UsageError
             ? error
             : new UsageError("transport", `${provider.name} usage is unavailable.`);
         lastError = usageError.message;
-        retryAt = now() + failureDelay(usageError, ++failures);
+        setBackoff(failureDelay(usageError, ++failures));
         render(lastCtx ?? ctx);
       } finally {
         if (requestGeneration === generation) {
           refreshAbort = undefined;
+          pendingAuthRevision = undefined;
         }
       }
     })();
     const pending = work.finally(() => {
-      if (pendingRefresh === pending) pendingRefresh = undefined;
+      if (pendingRefresh === pending) {
+        pendingRefresh = undefined;
+        if (pendingCredentialRefresh || pendingMetadataRefresh) {
+          pendingCredentialRefresh = false;
+          pendingMetadataRefresh = false;
+          // Re-resolve after a login or label change while the old request ran.
+          void refresh(lastCtx ?? ctx, { force: true }).catch(() => undefined);
+        }
+      }
     });
     pendingRefresh = pending;
     return pending;
   };
 
   const attachService = (candidate: MultiproviderService): void => {
-    if (candidate === service) return;
-    unsubscribeAccount?.();
-    unsubscribeAccount = undefined;
+    if (candidate === service && unsubscribeAccount) return;
+    releaseProviderSubscriptions();
     service = candidate;
+    const subscriptions: Array<() => void> = [];
     try {
-      const subscriptions = provider.providerIds.map((providerId) =>
-        candidate.onActiveAccountChanged(providerId, (event) => {
-          // Drop the previous account's numbers, then re-read for the new one.
-          invalidateRefresh();
-          if (!sharedQueries) queries.clear(providerId);
-          cache = undefined;
-          lastError = undefined;
-          retryAt = 0;
-          failures = 0;
-          const ctx = lastCtx ?? event?.ctx;
-          if (!ctx) return;
-          render(ctx);
-          void refresh(ctx, { force: true }).catch(() => undefined);
-        }),
-      );
+      for (const providerId of provider.providerIds) {
+        subscriptions.push(
+          candidate.onActiveAccountChanged(providerId, (event) => {
+            if (event?.kind === "metadata") {
+              const ctx = lastCtx ?? event.ctx;
+              if (ctx) {
+                if (pendingRefresh) pendingMetadataRefresh = true;
+                else void refresh(ctx, { force: true }).catch(() => undefined);
+              }
+              return;
+            }
+            // Drop the previous account's numbers, then re-read for the new one.
+            invalidateRefresh();
+            if (!sharedQueries) queries.clear(providerId);
+            cache = undefined;
+            lastError = undefined;
+            clearBackoff();
+            failures = 0;
+            unresolvedAuthRevision = undefined;
+            const ctx = lastCtx ?? event?.ctx;
+            if (!ctx) return;
+            render(ctx);
+            void refresh(ctx, { force: true }).catch(() => undefined);
+          }),
+        );
+      }
       unsubscribeAccount = () => {
-        for (const unsubscribe of subscriptions) unsubscribe();
+        for (const unsubscribe of subscriptions) {
+          try {
+            unsubscribe();
+          } catch {
+            /* Continue releasing the other subscriptions. */
+          }
+        }
       };
     } catch {
+      for (const unsubscribe of subscriptions) {
+        try {
+          unsubscribe();
+        } catch {
+          /* Continue releasing the other subscriptions. */
+        }
+      }
       unsubscribeAccount = undefined;
     }
     // The announcement can arrive after session_start, so the first reading may
@@ -306,8 +445,9 @@ export function registerProviderUsage(
       cache = undefined;
       lastError = undefined;
       render(lastCtx);
-      retryAt = 0;
+      clearBackoff();
       failures = 0;
+      unresolvedAuthRevision = undefined;
       void refresh(lastCtx, { force: true }).catch(() => undefined);
     }
   };
@@ -342,12 +482,15 @@ export function registerProviderUsage(
     config = readConfig(env, ctx.cwd);
     cache = undefined;
     lastError = undefined;
-    retryAt = 0;
+    clearBackoff();
     failures = 0;
+    attemptedIdentity = undefined;
+    unresolvedAuthRevision = undefined;
     lastCtx = ctx;
     activeProvider = ctx.model?.provider;
     activeModelId = ctx.model?.id;
     lastStatusText = undefined;
+    lastStatusUi = undefined;
     widgetKey = undefined;
     render(ctx);
     stopTimer();
@@ -357,12 +500,13 @@ export function registerProviderUsage(
 
   pi.on("model_select", (event, ctx) => {
     const model = event.model ?? ctx.model;
+    const providerChanged = activeProvider !== model?.provider;
     const changed =
-      activeProvider !== model?.provider ||
+      providerChanged ||
       scopeFor(activeProvider, activeModelId) !== scopeFor(model?.provider, model?.id);
     if (changed) {
       invalidateRefresh();
-      retryAt = 0;
+      clearBackoff();
       failures = 0;
     }
     const selectedCtx = Object.create(ctx, {
@@ -371,9 +515,14 @@ export function registerProviderUsage(
     lastCtx = selectedCtx;
     activeProvider = model?.provider;
     activeModelId = model?.id;
-    // A provider's cached quota survives model switches; aliases and independent
-    // quota buckets cannot share it. Account events still invalidate immediately.
-    if (eligible(selectedCtx) && cache && cache.scope !== scopeFor(activeProvider, activeModelId)) {
+    // Alias changes must re-resolve the credential before showing a cached quota.
+    // Models within one provider can keep their reading when the bucket is unchanged.
+    if (
+      eligible(selectedCtx) &&
+      cache &&
+      (cache.providerId !== activeProvider ||
+        cache.scope !== scopeFor(activeProvider, activeModelId))
+    ) {
       cache = undefined;
     }
     render(selectedCtx);
@@ -391,8 +540,12 @@ export function registerProviderUsage(
   pi.on("session_tree", updateDisplay);
   pi.on("turn_end", (_event, ctx) => {
     updateDisplay(_event, ctx);
-    // Match better-openai: refresh after each turn, subject to the cache TTL.
-    void refresh(ctx).catch(() => undefined);
+    // Without an account-change subscription, recheck Pi's current credential.
+    // The shared query cache still avoids a request for an unchanged login.
+    void refresh(ctx, {
+      force: !unsubscribeAccount,
+      recheckPending: !unsubscribeAccount,
+    }).catch(() => undefined);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -402,26 +555,36 @@ export function registerProviderUsage(
     setStatus(ctx, undefined);
     setStatusWidget(ctx, undefined);
     stopTimer();
-    unsubscribeAccount?.();
-    unsubscribeAccount = undefined;
+    releaseProviderSubscriptions();
     service = undefined;
     lastCtx = undefined;
     cache = undefined;
     lastError = undefined;
-    retryAt = 0;
+    clearBackoff();
     failures = 0;
+    attemptedIdentity = undefined;
+    unresolvedAuthRevision = undefined;
     activeProvider = undefined;
     activeModelId = undefined;
     lastStatusText = undefined;
+    lastStatusUi = undefined;
   });
 
   const report = async (ctx: ExtensionContext): Promise<string> => {
     const scope = scopeFor(ctx.model?.provider, ctx.model?.id);
-    if (cache?.scope === scope && !lastError) {
-      if (now() - cache.fetchedAt >= config.refreshIntervalMs)
-        void refresh(ctx, { ignoreEligibility: true }).catch(() => undefined);
-    } else {
+    // Explicit reports must confirm the current login and wait for stale data.
+    // The shared query cache avoids another HTTP request for an unchanged key.
+    let revision = authRevision();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const hadPending = !!pendingRefresh;
       await refresh(ctx, { force: true, ignoreEligibility: true });
+      const currentRevision = authRevision();
+      if (!hadPending && currentRevision === revision) break;
+      if (attempt === 2) return provider.name + " usage changed while loading; try again.";
+      // A pending poll may have resolved an earlier login, or native /login
+      // may have changed auth.json while this request was in flight. A stale
+      // poll can also queue one follow-up refresh before this command resumes.
+      revision = currentRevision;
     }
     return cache?.scope === scope && !lastError
       ? formatDetail(
@@ -451,11 +614,26 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   let reportCtx: ExtensionContext | undefined;
   let reportTimer: ReturnType<typeof setInterval> | undefined;
   let reportGeneration = 0;
-  let reportPending: Promise<void> | undefined;
+  type SavedReport = { text: string; verified: boolean };
+  let reportPending: Promise<SavedReport> | undefined;
+  let trailingRefreshCtx: ExtensionContext | undefined;
   let reportAbort: AbortController | undefined;
   let live = true;
-  let savedCache: { roster: string; text: string; fetchedAt: number } | undefined;
+  let savedCache:
+    | { roster: string; preEmailRoster?: string; text: string; fetchedAt: number }
+    | undefined;
   let accountUnsubscribers: Array<() => void> = [];
+  const releaseAccountSubscriptions = () => {
+    const subscriptions = accountUnsubscribers;
+    accountUnsubscribers = [];
+    for (const unsubscribe of subscriptions) {
+      try {
+        unsubscribe();
+      } catch {
+        /* Continue releasing the other subscriptions. */
+      }
+    }
+  };
   const now = options.now ?? (() => Date.now());
   const bucketFor = (ctx: ExtensionContext) =>
     ctx.model?.provider === "openai-codex" && ctx.model.id === "gpt-5.3-codex-spark"
@@ -464,6 +642,7 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   let reportBucket = "default";
   const invalidateSaved = () => {
     reportGeneration++;
+    trailingRefreshCtx = undefined;
     reportAbort?.abort();
     reportAbort = undefined;
     reportPending = undefined;
@@ -472,14 +651,18 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   const rosterKey = (accounts: SavedUsageAccount[], ctx: ExtensionContext) =>
     JSON.stringify([
       bucketFor(ctx),
-      ...accounts.map(({ id, providerId, label, authKind, active }) => [
+      ...accounts.map(({ id, providerId, label, authKind, active, email, credentialRevision }) => [
         id,
         providerId,
         label,
         authKind,
         active,
+        email,
+        credentialRevision,
       ]),
     ]);
+  const cacheMatches = (roster: string): boolean =>
+    !!savedCache && (savedCache.roster === roster || savedCache.preEmailRoster === roster);
   const configFor = (ctx: ExtensionContext) => readConfig(options.env ?? process.env, ctx.cwd);
   const reportOptions = (ctx: ExtensionContext) => ({
     ...options,
@@ -498,67 +681,115 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   const refreshSaved = async (
     ctx: ExtensionContext,
     knownAccounts?: SavedUsageAccount[],
-  ): Promise<void> => {
+    callerSignal?: AbortSignal,
+  ): Promise<SavedReport | undefined> => {
+    callerSignal?.throwIfAborted();
     const service = accountService;
     if (!live || !service?.listAccounts || !service.resolveAccountAuth) return;
     const generation = reportGeneration;
     const config = configFor(ctx);
     let accounts = knownAccounts;
     while (reportPending) {
-      await reportPending.catch(() => undefined);
+      await awaitWithAbort(
+        reportPending.catch(() => undefined),
+        callerSignal,
+      );
       if (!live || generation !== reportGeneration || service !== accountService) return;
-      accounts ??= await service.listAccounts();
+      // The caller's roster may have changed while another report was in
+      // flight, even if this service has no working change subscription.
+      accounts = await awaitWithAbort(service.listAccounts(), callerSignal);
       if (!live || generation !== reportGeneration || service !== accountService) return;
       if (
         savedCache &&
-        now() - savedCache.fetchedAt < config.refreshIntervalMs &&
-        savedCache.roster === rosterKey(accounts, ctx)
+        freshWithin(savedCache.fetchedAt, now(), config.refreshIntervalMs) &&
+        cacheMatches(rosterKey(accounts, ctx))
       )
-        return;
+        return { text: savedCache.text, verified: true };
     }
     const controller = new AbortController();
+    const signal = callerSignal
+      ? AbortSignal.any([controller.signal, callerSignal])
+      : controller.signal;
     reportAbort = controller;
     const scopedCtx = Object.create(ctx, {
       model: { value: ctx.model, enumerable: true },
     }) as ExtensionContext;
     const work = (async () => {
-      const currentAccounts = accounts ?? (await service.listAccounts!());
-      controller.signal.throwIfAborted();
+      const currentAccounts = accounts ?? (await awaitWithAbort(service.listAccounts!(), signal));
+      signal.throwIfAborted();
+      if (
+        savedCache &&
+        freshWithin(savedCache.fetchedAt, now(), config.refreshIntervalMs) &&
+        cacheMatches(rosterKey(currentAccounts, scopedCtx))
+      )
+        return { text: savedCache.text, verified: true };
+      let verifiedRoster: SavedUsageAccount[] | undefined;
+      let projectedRoster: SavedUsageAccount[] | undefined;
       const text = await reportSavedAccounts(scopedCtx, service, currentAccounts, config, {
         ...reportOptions(scopedCtx),
-        signal: controller.signal,
+        signal,
+        onVerifiedRoster: (roster, projected) => {
+          verifiedRoster = roster;
+          projectedRoster = projected;
+        },
       });
-      if (live && generation === reportGeneration && accountService === service)
-        savedCache = { roster: rosterKey(currentAccounts, scopedCtx), text, fetchedAt: now() };
+      if (live && generation === reportGeneration && accountService === service) {
+        if (verifiedRoster) {
+          const roster = rosterKey(projectedRoster ?? verifiedRoster, scopedCtx);
+          const beforeEmail = rosterKey(verifiedRoster, scopedCtx);
+          savedCache = {
+            roster,
+            ...(beforeEmail !== roster ? { preEmailRoster: beforeEmail } : {}),
+            text,
+            fetchedAt: now(),
+          };
+        } else savedCache = undefined;
+      }
+      return { text, verified: !!verifiedRoster };
     })();
     reportPending = work.finally(() => {
-      if (reportPending === pending) reportPending = undefined;
+      if (reportPending === pending) {
+        reportPending = undefined;
+        const trailing = trailingRefreshCtx;
+        trailingRefreshCtx = undefined;
+        if (trailing) scheduleSavedRefresh(trailing);
+      }
       if (reportAbort === controller) reportAbort = undefined;
     });
     const pending = reportPending;
-    await pending;
+    return pending;
   };
   const scheduleSavedRefresh = (ctx: ExtensionContext) => {
     if (!live || !configFor(ctx).enabled) return;
+    // Coalesce timer ticks into one roster recheck after a slow report. This
+    // still discovers account changes that occurred while the report ran.
+    if (reportPending) {
+      trailingRefreshCtx = ctx;
+      return;
+    }
     void refreshSaved(ctx).catch(() => undefined);
   };
   pi.events.on(ACCOUNTS_SERVICE_EVENT, (value: unknown) => {
     if (isMultiproviderService(value) && value.listAccounts && value.resolveAccountAuth) {
       if (accountService === value && accountUnsubscribers.length) return;
-      accountUnsubscribers.forEach((unsubscribe) => unsubscribe());
-      accountUnsubscribers = [];
+      releaseAccountSubscriptions();
       accountService = value;
       invalidateSaved();
-      for (const provider of USAGE_PROVIDERS) {
-        for (const providerId of provider.providerIds) {
-          accountUnsubscribers.push(
-            value.onActiveAccountChanged(providerId, () => {
-              queries.clear(providerId);
-              invalidateSaved();
-              if (reportCtx) scheduleSavedRefresh(reportCtx);
-            }),
-          );
+      try {
+        for (const provider of USAGE_PROVIDERS) {
+          for (const providerId of provider.providerIds) {
+            accountUnsubscribers.push(
+              value.onActiveAccountChanged(providerId, (event) => {
+                if (event?.kind !== "metadata") queries.clear(providerId);
+                invalidateSaved();
+                if (reportCtx) scheduleSavedRefresh(reportCtx);
+              }),
+            );
+          }
         }
+      } catch {
+        releaseAccountSubscriptions();
+        // Polling and explicit /usage reports still work without change events.
       }
       if (reportCtx) scheduleSavedRefresh(reportCtx);
     }
@@ -585,8 +816,7 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
     reportCtx = undefined;
     if (reportTimer) clearInterval(reportTimer);
     reportTimer = undefined;
-    accountUnsubscribers.forEach((unsubscribe) => unsubscribe());
-    accountUnsubscribers = [];
+    releaseAccountSubscriptions();
   });
   pi.on("model_select", (event, ctx) => {
     reportCtx = Object.create(ctx, {
@@ -602,30 +832,61 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   pi.registerCommand("usage", {
     description: "Show usage for every saved account, with labels and current-account markers",
     handler: async (_args: string, ctx: ExtensionContext) => {
-      await showUsagePanel(ctx, async () => {
-        if (!live) return "Usage request cancelled.";
+      await showUsagePanel(ctx, async (signal) => {
+        if (!live || signal.aborted) return "Usage request cancelled.";
         const generation = reportGeneration;
         if (accountService?.listAccounts && accountService.resolveAccountAuth) {
           try {
-            const accounts = await accountService.listAccounts();
+            const accounts = await awaitWithAbort(accountService.listAccounts(), signal);
             if (!live || generation !== reportGeneration) return "Usage request cancelled.";
             if (accounts.length) {
               const roster = rosterKey(accounts, ctx);
-              if (savedCache?.roster === roster) {
-                if (now() - savedCache.fetchedAt >= configFor(ctx).refreshIntervalMs)
+              if (cacheMatches(roster)) {
+                if (!freshWithin(savedCache!.fetchedAt, now(), configFor(ctx).refreshIntervalMs))
                   scheduleSavedRefresh(ctx);
-                return savedCache.text;
+                return savedCache!.text;
               }
-              await refreshSaved(ctx, accounts);
+              const fetched = await refreshSaved(ctx, accounts, signal);
               if (!live || generation !== reportGeneration) return "Usage request cancelled.";
-              if (savedCache?.roster === roster) return savedCache.text;
+              if (fetched && !fetched.verified) {
+                // A storage read or one account lookup may have failed, or the
+                // roster may have changed while requests were in flight. Retry
+                // a changed roster once so the panel can show every account.
+                let latest: SavedUsageAccount[] | undefined;
+                try {
+                  latest = await awaitWithAbort(accountService.listAccounts(), signal);
+                } catch {
+                  signal.throwIfAborted();
+                }
+                if (!live || generation !== reportGeneration) return "Usage request cancelled.";
+                let report: SavedReport | undefined = fetched;
+                if (latest && rosterKey(latest, ctx) !== roster) {
+                  if (!latest.length)
+                    return "Usage report changed while loading. Run /usage again.";
+                  report = await refreshSaved(ctx, latest, signal);
+                  if (!live || generation !== reportGeneration) return "Usage request cancelled.";
+                  if (report?.verified) return report.text;
+                }
+                return report?.text
+                  ? `${report.text}\n\nAccount list could not be verified. Run /usage again for a complete report.`
+                  : "Usage report changed while loading. Run /usage again.";
+              }
+              if (cacheMatches(roster)) return savedCache!.text;
+              // Authentication may have refreshed an OAuth credential during
+              // this report. Accept the cache only if it matches the current pool.
+              const current = await awaitWithAbort(accountService.listAccounts(), signal);
+              if (cacheMatches(rosterKey(current, ctx))) return savedCache!.text;
               return "Usage report changed while loading. Run /usage again.";
             }
           } catch {
+            if (signal.aborted) return "Usage request cancelled.";
             return "Could not read saved accounts. Check account storage and try again.";
           }
         }
-        const details = await Promise.all(reports.map((report) => report(ctx)));
+        const details = await awaitWithAbort(
+          Promise.all(reports.map((report) => report(ctx))),
+          signal,
+        );
         if (!live || generation !== reportGeneration) return "Usage request cancelled.";
         return details.join("\n\n");
       });

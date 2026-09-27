@@ -185,6 +185,100 @@ it("refreshes saved-account usage in the background and serves /usage from that 
     vi.useRealTimers();
   }
 });
+it("retries a failed saved-account report after the query backoff expires", async () => {
+  vi.useFakeTimers();
+  try {
+    let attempts = 0;
+    let outage = true;
+    const h = harness(false, async (url) => {
+      if (url.includes("opencode.ai")) {
+        attempts++;
+        if (outage) throw new Error("temporary outage");
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({ usage: { weekly: { percent: 20 } } }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ rate_limit: { primary_window: { used_percent: 25 } } }),
+      };
+    });
+    const account = {
+      id: "opencode-go/work",
+      providerId: "opencode-go",
+      label: "work",
+      authKind: "api_key",
+      active: true,
+    };
+    const service = {
+      listAccounts: async () => [account],
+      resolveAccountAuth: async () => ({ accessToken: "fixture-key", label: "work" }),
+      getActiveAccount: async () => undefined,
+      resolveActiveAccountAuth: async () => undefined,
+      onActiveAccountChanged: () => () => {},
+    } satisfies MultiproviderService;
+    h.announceService(service);
+    h.emit("session_start");
+    await vi.advanceTimersByTimeAsync(0);
+    await h.commands.get("usage")!.handler("", h.ctx);
+    expect(h.panelReports.at(-1)).toContain("Usage unavailable");
+    expect(attempts).toBe(2);
+    outage = false;
+    await vi.advanceTimersByTimeAsync(16_000);
+    await h.commands.get("usage")!.handler("", h.ctx);
+    expect(h.panelReports.at(-1)).toContain("80% left");
+    expect(attempts).toBe(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+it("replaces cached quota when a saved label receives a different credential without an event", async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness(false, async (url, init) => {
+      const token = new Headers(init?.headers).get("authorization");
+      const body = url.includes("opencode.ai")
+        ? { usage: { weekly: { percent: token === "Bearer new-key" ? 80 : 20 } } }
+        : { rate_limit: { primary_window: { used_percent: 25 } } };
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => body };
+    });
+    let token = "old-key";
+    let revision = "old-revision";
+    const service = {
+      listAccounts: async () => [
+        {
+          id: "opencode-go/work",
+          providerId: "opencode-go",
+          label: "work",
+          authKind: "api_key",
+          active: true,
+          credentialRevision: revision,
+        },
+      ],
+      resolveAccountAuth: async () => ({ accessToken: token, label: "work" }),
+      getActiveAccount: async () => undefined,
+      resolveActiveAccountAuth: async () => undefined,
+      onActiveAccountChanged: () => () => {},
+    } satisfies MultiproviderService;
+    h.announceService(service);
+    h.emit("session_start");
+    await vi.advanceTimersByTimeAsync(0);
+    await h.commands.get("usage")!.handler("", h.ctx);
+    expect(h.panelReports.at(-1)).toContain("80% left");
+    token = "new-key";
+    revision = "new-revision";
+    await h.commands.get("usage")!.handler("", h.ctx);
+    expect(h.panelReports.at(-1)).toContain("20% left");
+    expect(h.fetchImpl.mock.calls.filter(([url]) => url.includes("opencode.ai"))).toHaveLength(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 it("queries all providers on demand, even when automatic display is disabled", async () => {
   const h = harness(true);
   h.emit("session_start");

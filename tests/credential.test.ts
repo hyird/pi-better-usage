@@ -1,14 +1,16 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readStoredApiKey, resolveUsageCredential } from "../src/credential.ts";
+import { accountLabel } from "../src/usage.ts";
 import type { MultiproviderService, MultiproviderServiceContext } from "../src/multiprovider.ts";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs.length = 0;
 });
 
@@ -59,6 +61,22 @@ describe("resolveUsageCredential", () => {
     });
   });
 
+  it("uses a saved pooled email when the usage endpoint has none", async () => {
+    const resolved = await resolveUsageCredential(ctxWithRegistry(undefined), {
+      env: tempEnv(),
+      service: () =>
+        service({
+          resolveActiveAccountAuth: async () => ({
+            accessToken: "pooled-key",
+            label: "work",
+            email: "saved@example.com",
+          }),
+        }),
+    });
+    expect(resolved?.email).toBe("saved@example.com");
+    expect(accountLabel(resolved!)).toBe("saved@example.com");
+  });
+
   it("names an unlabelled pooled account", async () => {
     const credential = await resolveUsageCredential(ctxWithRegistry(undefined), {
       env: tempEnv(),
@@ -99,6 +117,82 @@ describe("resolveUsageCredential", () => {
     }
   });
 
+  it("stops waiting for Pi's registry when the lookup is cancelled", async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ctx = ctxWithRegistry({
+      getProviderAuth: async () => {
+        entered();
+        await gate;
+        return { auth: { apiKey: "late-key" } };
+      },
+    });
+    const controller = new AbortController();
+    const pending = resolveUsageCredential(ctx, { env: tempEnv() }, controller.signal);
+    try {
+      await started;
+      controller.abort();
+      expect(
+        await Promise.race([
+          pending.then(
+            () => "resolved",
+            () => "cancelled",
+          ),
+          new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 200)),
+        ]),
+      ).toBe("cancelled");
+    } finally {
+      release();
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("does not borrow Pi's credential when an active pool slot returns no token", async () => {
+    const registry = vi.fn(async () => ({ auth: { apiKey: "wrong-account" } }));
+    for (const resolveActiveAccountAuth of [
+      async () => undefined,
+      async () => ({ accessToken: "   ", label: "work" }),
+    ]) {
+      const credential = await resolveUsageCredential(
+        ctxWithRegistry({ getProviderAuth: registry }),
+        {
+          env: tempEnv(),
+          service: () =>
+            service({
+              getActiveAccount: async () => ({
+                id: "opencode-go/work",
+                label: "work",
+                authKind: "api_key",
+              }),
+              resolveActiveAccountAuth,
+            }),
+        },
+      );
+      expect(credential).toBeNull();
+    }
+    expect(registry).not.toHaveBeenCalled();
+  });
+
+  it("keeps Pi fallback for an older service's pi:default slot", async () => {
+    const credential = await resolveUsageCredential(
+      ctxWithRegistry({ getProviderAuth: async () => ({ auth: { apiKey: "registry-key" } }) }),
+      {
+        env: tempEnv(),
+        service: () =>
+          service({
+            getActiveAccount: async () => ({ id: "pi:default", label: "Pi", authKind: "api_key" }),
+          }),
+      },
+    );
+    expect(credential).toMatchObject({ apiKey: "registry-key", source: "pi" });
+  });
+
   it("does not borrow Pi's account when pooled authentication fails", async () => {
     const credential = await resolveUsageCredential(
       ctxWithRegistry({ getProviderAuth: async () => ({ auth: { apiKey: "wrong-account" } }) }),
@@ -121,6 +215,9 @@ describe("resolveUsageCredential", () => {
       [{ apiKey: "from-direct" }, "from-direct"],
       [{ headers: { Authorization: "Bearer from-header" } }, "from-header"],
       [{ auth: { headers: { Authorization: "bearer lower-case" } } }, "lower-case"],
+      [{ headers: { authorization: "Bearer lower-header" } }, "lower-header"],
+      [{ headers: { AUTHORIZATION: "Bearer upper-header" } }, "upper-header"],
+      [{ headers: new Headers({ authorization: "Bearer headers-object" }) }, "headers-object"],
     ];
     for (const [shape, expected] of shapes) {
       const credential = await resolveUsageCredential(
@@ -162,6 +259,34 @@ describe("resolveUsageCredential", () => {
     expect(credential).toMatchObject({ apiKey: "stored-key", source: "authFile" });
   });
 
+  it("does not replace an unresolved stored credential with another environment key", async () => {
+    for (const entry of [
+      { type: "api_key", key: "!read-secret" },
+      { type: "api_key", key: "$STORED_KEY" },
+      { type: "api_key", key: "prefix-${STORED_KEY}" },
+      { type: "oauth", access: "stored-token" },
+    ]) {
+      const env = { ...tempEnv({ "opencode-go": entry }), OPENCODE_API_KEY: "different-account" };
+      const credential = await resolveUsageCredential(
+        ctxWithRegistry({
+          getProviderAuth: async () => {
+            throw new Error("unavailable");
+          },
+        }),
+        { env },
+      );
+      expect(credential).toBeNull();
+    }
+  });
+
+  it("uses Pi's resolved value for a stored template", async () => {
+    const credential = await resolveUsageCredential(
+      ctxWithRegistry({ getProviderAuth: async () => ({ auth: { apiKey: "resolved-key" } }) }),
+      { env: tempEnv({ "opencode-go": { type: "api_key", key: "$STORED_KEY" } }) },
+    );
+    expect(credential).toMatchObject({ apiKey: "resolved-key", source: "pi" });
+  });
+
   it("falls back to OPENCODE_API_KEY", async () => {
     const credential = await resolveUsageCredential(ctxWithRegistry(undefined), {
       env: { ...tempEnv(), OPENCODE_API_KEY: " env-key " },
@@ -197,6 +322,12 @@ describe("readStoredApiKey", () => {
   it("accepts only a stored api_key entry", () => {
     expect(readStoredApiKey(tempEnv({ "opencode-go": { type: "api_key", key: "k" } }))).toBe("k");
     expect(readStoredApiKey(tempEnv({ "opencode-go": { type: "api_key", key: " k " } }))).toBe("k");
+    expect(
+      readStoredApiKey(tempEnv({ "opencode-go": { type: "api_key", key: "!read-secret" } })),
+    ).toBeNull();
+    expect(
+      readStoredApiKey(tempEnv({ "opencode-go": { type: "api_key", key: "$STORED_KEY" } })),
+    ).toBeNull();
     expect(readStoredApiKey(tempEnv({ "opencode-go": { type: "oauth", key: "k" } }))).toBeNull();
     expect(readStoredApiKey(tempEnv({ "opencode-go": { type: "api_key" } }))).toBeNull();
     expect(readStoredApiKey(tempEnv({ "opencode-go": "nope" }))).toBeNull();

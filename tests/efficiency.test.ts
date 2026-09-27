@@ -37,9 +37,10 @@ function harness(
   let accounts = Array.from({ length: options.count ?? 1 }, (_, i) =>
     account(`account-${i}`, i === 0),
   );
+  let activeLabel: string | undefined;
   const handlers = new Map<string, Array<(event: any, ctx: any) => void>>();
   const events = new Map<string, Array<(value: any) => void>>();
-  const changes = new Map<string, Array<() => void>>();
+  const changes = new Map<string, Array<(event?: { kind?: "metadata" }) => void>>();
   const commands = new Map<string, any>();
   const requests: Array<{ signal: AbortSignal; release: () => void }> = [];
   const fetchImpl: FetchLike = vi.fn(async (_url, init) => {
@@ -57,7 +58,7 @@ function harness(
   });
   const auth = vi.fn(async (id: string, _ctx: unknown, signal?: AbortSignal) => {
     signal?.throwIfAborted();
-    return { accessToken: `fixture-${id}`, label: id };
+    return { accessToken: `fixture-${id}`, label: activeLabel ?? id };
   });
   const service = {
     listAccounts: async () => accounts,
@@ -65,7 +66,7 @@ function harness(
     resolveAccountAuth: auth,
     resolveActiveAccountAuth: async (id: string, ctx: unknown, signal?: AbortSignal) =>
       id === "opencode-go" ? auth(accounts[0]!.id, ctx, signal) : undefined,
-    onActiveAccountChanged: (id: string, fn: () => void) => {
+    onActiveAccountChanged: (id: string, fn: (event?: { kind?: "metadata" }) => void) => {
       changes.set(id, [...(changes.get(id) ?? []), fn]);
       return () => {};
     },
@@ -106,6 +107,15 @@ function harness(
       accounts = [account(id, true)];
       changes.get("opencode-go")?.forEach((fn) => fn());
     },
+    changeEmail(email: string) {
+      accounts = accounts.map((value) => ({ ...value, email }));
+      changes.get("opencode-go")?.forEach((fn) => fn({ kind: "metadata" }));
+    },
+    changeLabel(label: string) {
+      activeLabel = label;
+      accounts = accounts.map((value) => (value.active ? { ...value, label } : value));
+      changes.get("opencode-go")?.forEach((fn) => fn({ kind: "metadata" }));
+    },
   };
 }
 
@@ -136,6 +146,32 @@ it("the footer and periodic saved-account refresh also share an expired reading"
   expect(h.requests).toHaveLength(2);
   await h.command();
   expect(h.requests).toHaveLength(2);
+});
+
+it("updates saved email without repeating a fresh quota request", async () => {
+  const h = harness();
+  h.emit("session_start");
+  await settle();
+  expect(h.requests).toHaveLength(1);
+  h.changeEmail("work@example.com");
+  await settle();
+  await h.command();
+  expect(h.ctx.ui.notify.mock.calls.at(-1)[0]).toContain("work@example.com");
+  expect(h.requests).toHaveLength(1);
+});
+
+it("updates the footer label after an in-flight quota request without fetching it again", async () => {
+  const h = harness({ deferred: true });
+  h.emit("session_start");
+  await settle();
+  expect(h.requests).toHaveLength(1);
+  h.changeLabel("preferred-alias");
+  await settle();
+  h.requests[0]!.release();
+  await settle();
+  const status = h.ctx.ui.setStatus.mock.calls.at(-1)?.[1] ?? "";
+  expect(status).toContain("preferred-alias");
+  expect(h.requests).toHaveLength(1);
 });
 
 it("shutdown cancels all running saved queries and never starts queued accounts", async () => {

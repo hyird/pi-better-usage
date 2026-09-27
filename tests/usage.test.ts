@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG, type UsageConfig } from "../src/config.ts";
 import type { UsageCredential } from "../src/credential.ts";
 import {
@@ -88,29 +88,42 @@ describe("parseUsagePayload", () => {
     expect(Object.keys(parsed.windows)).toEqual(["weekly"]);
   });
 
-  it("clamps a percentage the endpoint should not send", () => {
-    expect(
-      parseUsagePayload({ usage: { weekly: { percent: -10 } } }, NOW).windows.weekly?.percentUsed,
-    ).toBe(0);
+  it("rejects negative usage instead of reporting a full remaining quota", () => {
+    expect(() => parseUsagePayload({ usage: { weekly: { percent: -10 } } }, NOW)).toThrow(
+      /no usable window/,
+    );
+    const mixed = parseUsagePayload(
+      { usage: { rolling: { percent: -10 }, weekly: { percent: 20 } } },
+      NOW,
+    );
+    expect(mixed.windows.rolling).toBeUndefined();
+    expect(mixed.windows.weekly?.percentUsed).toBe(20);
+  });
+
+  it("clamps over-limit usage to an exhausted quota", () => {
     expect(
       parseUsagePayload({ usage: { weekly: { percent: 300 } } }, NOW).windows.weekly?.percentUsed,
     ).toBe(100);
   });
 
-  it("falls back to ok for an unusable status", () => {
+  it("keeps an omitted status compatible but warns about malformed values", () => {
+    expect(
+      parseUsagePayload({ usage: { weekly: { percent: 1 } } }, NOW).windows.weekly?.status,
+    ).toBe("ok");
     expect(
       parseUsagePayload({ usage: { weekly: { percent: 1, status: "  " } } }, NOW).windows.weekly
         ?.status,
-    ).toBe("ok");
+    ).toBe("unknown");
     expect(
       parseUsagePayload({ usage: { weekly: { percent: 1, status: 7 } } }, NOW).windows.weekly
         ?.status,
-    ).toBe("ok");
-    // Non-ASCII would break the single-line widget; treat it as ok.
-    expect(
-      parseUsagePayload({ usage: { weekly: { percent: 1, status: "okä" } } }, NOW).windows.weekly
-        ?.status,
-    ).toBe("ok");
+    ).toBe("unknown");
+    const malformed = parseUsagePayload(
+      { usage: { weekly: { percent: 1, status: "exhausted\u001b[2J" } } },
+      NOW,
+    );
+    expect(malformed.windows.weekly?.status).toBe("unknown");
+    expect(formatStatusLine(malformed, config({ windows: ["weekly"] }))).toContain("!unknown");
   });
 
   it("keeps a real non-ok status", () => {
@@ -175,6 +188,15 @@ describe("fetchUsage", () => {
     expect(parsed.windows.weekly?.percentUsed).toBe(1);
   });
 
+  it("parses a native streamed response within the size limit", async () => {
+    const fetchImpl: FetchLike = async () =>
+      new Response(JSON.stringify({ usage: { weekly: { percent: 7 } } }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    const parsed = await fetchUsage(credential(), { fetchImpl, now: NOW });
+    expect(parsed.windows.weekly?.percentUsed).toBe(7);
+  });
+
   it("explains a rejected key", async () => {
     for (const status of [401, 403]) {
       await expect(
@@ -211,6 +233,72 @@ describe("fetchUsage", () => {
     const snapshot = await fetchUsage(credential(), { fetchImpl });
     expect(snapshot.windows.weekly?.percentUsed).toBe(1);
     expect(requests).toEqual(["Bearer secret", "Bearer secret"]);
+  });
+
+  it("stops waiting when a custom transport ignores cancellation", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn<FetchLike>(async () => new Promise<never>(() => {}));
+    const pending = fetchUsage(credential(), { fetchImpl, signal: controller.signal });
+    controller.abort();
+    await expect(
+      Promise.race([
+        pending,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("Cancellation did not settle the request")), 100),
+        ),
+      ]),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("stops waiting when response JSON ignores cancellation", async () => {
+    const controller = new AbortController();
+    let parsing!: () => void;
+    const parsingStarted = new Promise<void>((resolve) => {
+      parsing = resolve;
+    });
+    const fetchImpl: FetchLike = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: () => {
+        parsing();
+        return new Promise<never>(() => {});
+      },
+    });
+    const pending = fetchUsage(credential(), { fetchImpl, signal: controller.signal });
+    await parsingStarted;
+    controller.abort();
+    await expect(
+      Promise.race([
+        pending,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("Cancellation did not settle body parsing")), 100),
+        ),
+      ]),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("limits a streamed response without Content-Length", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(256 * 1024 + 1));
+        controller.close();
+      },
+    });
+    const json = vi.fn(async () => ({}));
+    await expect(
+      fetchUsage(credential(), {
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          body,
+          json,
+        }),
+      }),
+    ).rejects.toMatchObject({ kind: "oversize" });
+    expect(json).not.toHaveBeenCalled();
   });
 
   it("rejects an oversized response before reading it", async () => {

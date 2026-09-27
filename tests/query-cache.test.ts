@@ -47,6 +47,28 @@ it("shares in-flight requests and fresh readings without extending their TTL", a
   await expired;
 });
 
+it("expires readings and failure cooldowns when the clock moves backward", async () => {
+  let now = 1_000_000;
+  let fail = false;
+  const fetch = vi.fn(async () => {
+    if (fail) throw new UsageError("transport", "offline");
+    return snapshot;
+  });
+  const cache = new UsageQueryCache({ now: () => now });
+  const p = provider(fetch);
+  await cache.read(p, credential, options);
+  now = 500_000;
+  await cache.read(p, credential, options);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  now += options.ttl;
+  fail = true;
+  await expect(cache.read(p, credential, options)).rejects.toThrow("offline");
+  now -= 1_000;
+  fail = false;
+  await cache.read(p, credential, options);
+  expect(fetch).toHaveBeenCalledTimes(4);
+});
+
 it("isolates credentials, account IDs, aliases and Spark quota buckets", async () => {
   const fetch = vi.fn(async () => snapshot);
   const p = provider(fetch);
@@ -58,6 +80,46 @@ it("isolates credentials, account IDs, aliases and Spark quota buckets", async (
   await cache.read(p, credential, { ...options, modelId: "gpt-5.3-codex-spark" });
   await cache.read(p, credential, { ...options, modelId: "another-default-model" });
   expect(fetch).toHaveBeenCalledTimes(5);
+});
+
+it("shares Grok quota across aliases but keeps credentials separate and clears every alias", async () => {
+  let release!: () => void;
+  const fetch = vi.fn(async () => {
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return snapshot;
+  });
+  const grok = {
+    ...provider(fetch),
+    id: "grok",
+    name: "Grok",
+    providerIds: ["xai", "xai-oauth", "xai-auth"],
+  } as UsageProvider;
+  const cache = new UsageQueryCache();
+  const first = cache.read(grok, credential, { providerId: "xai", ttl: 60_000 });
+  const second = cache.read(grok, credential, { providerId: "xai-oauth", ttl: 60_000 });
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  release();
+  await Promise.all([first, second]);
+  await cache.read(grok, credential, { providerId: "xai-auth", ttl: 60_000 });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  const other = cache.read(
+    grok,
+    { ...credential, fingerprint: "other" },
+    { providerId: "xai", ttl: 60_000 },
+  );
+  await settle();
+  release();
+  await other;
+  expect(fetch).toHaveBeenCalledTimes(2);
+  cache.clear("xai-oauth");
+  const cleared = cache.read(grok, credential, { providerId: "xai", ttl: 60_000 });
+  await settle();
+  release();
+  await cleared;
+  expect(fetch).toHaveBeenCalledTimes(3);
 });
 
 it("cancelling one subscriber keeps the other subscriber's request alive", async () => {
@@ -107,6 +169,44 @@ it("all subscribers cancelling aborts the transport; late results cannot replace
   requests[0]!.release(snapshot);
   await settle();
   expect((await cache.read(p, credential, options)).snapshot).toEqual(newer);
+});
+
+it("prunes excess entries after a burst of concurrent account requests settles", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fetch = vi.fn(async () => {
+    await gate;
+    return snapshot;
+  });
+  const p = provider(fetch);
+  const cache = new UsageQueryCache();
+  const reads = Array.from({ length: 130 }, (_, index) =>
+    cache.read(p, { ...credential, fingerprint: `account-${index}` }, options),
+  );
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(130);
+  release();
+  await Promise.all(reads);
+  await cache.read(p, { ...credential, fingerprint: "account-129" }, options);
+  expect(fetch).toHaveBeenCalledTimes(130);
+  await cache.read(p, { ...credential, fingerprint: "account-0" }, options);
+  expect(fetch).toHaveBeenCalledTimes(131);
+});
+
+it("keeps a recently used account when a new account fills the cache", async () => {
+  const fetch = vi.fn(async () => snapshot);
+  const p = provider(fetch);
+  const cache = new UsageQueryCache();
+  const account = (index: number) => ({ ...credential, fingerprint: `account-${index}` });
+  for (let index = 0; index < 128; index++) await cache.read(p, account(index), options);
+  await cache.read(p, account(0), options);
+  await cache.read(p, account(128), options);
+  await cache.read(p, account(0), options);
+  expect(fetch).toHaveBeenCalledTimes(129);
+  await cache.read(p, account(1), options);
+  expect(fetch).toHaveBeenCalledTimes(130);
 });
 
 it("clearing the session promptly rejects waiters even if a provider ignores abort", async () => {

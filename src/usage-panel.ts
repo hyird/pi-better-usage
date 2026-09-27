@@ -22,6 +22,7 @@ export class UsagePanel {
     private rows: () => number,
     private repaint: () => void,
     private done: () => void,
+    private onClose: () => void = () => {},
   ) {}
 
   setContent(text: string): void {
@@ -31,8 +32,14 @@ export class UsagePanel {
     this.repaint();
   }
 
-  dispose(): void {
+  private close(): void {
+    if (this.closed) return;
     this.closed = true;
+    this.onClose();
+  }
+
+  dispose(): void {
+    this.close();
   }
   invalidate(): void {}
 
@@ -45,7 +52,7 @@ export class UsagePanel {
   handleInput(data: string): void {
     if (this.closed) return;
     if (matchesKey(data, "escape")) {
-      this.closed = true;
+      this.close();
       this.done();
       return;
     }
@@ -112,11 +119,19 @@ export class UsagePanel {
 
 export async function showUsagePanel(
   ctx: ExtensionContext,
-  load: () => Promise<string>,
+  load: (signal: AbortSignal) => Promise<string>,
 ): Promise<void> {
+  const controller = new AbortController();
   const terminal = ctx.mode === "tui" || (ctx.mode === undefined && ctx.hasUI);
   if (!terminal) {
-    ctx.ui.notify(await load(), "info");
+    let report: string;
+    try {
+      report = await load(controller.signal);
+    } catch {
+      ctx.ui.notify("Could not load usage. Try /usage again.", "warning");
+      return;
+    }
+    ctx.ui.notify(report, "info");
     return;
   }
   await ctx.ui.custom<void>(
@@ -126,10 +141,14 @@ export async function showUsagePanel(
         () => tui.terminal.rows,
         () => tui.requestRender(),
         () => done(),
+        () => controller.abort(),
       );
       // Display immediately, so Esc also works while network requests are pending.
       void Promise.resolve()
-        .then(load)
+        .then(() => {
+          controller.signal.throwIfAborted();
+          return load(controller.signal);
+        })
         .then(
           (text) => panel.setContent(text),
           () => panel.setContent("Could not load usage. Close this panel and try /usage again."),

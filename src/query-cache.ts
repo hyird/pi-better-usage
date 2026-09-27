@@ -1,10 +1,12 @@
 import type { UsageCredential } from "./credential.ts";
 import type { UsageProvider } from "./providers.ts";
+import { GROK_PROVIDERS } from "./subscription-auth.ts";
 import { UsageError, type FetchLike, type UsageSnapshot } from "./usage.ts";
 
 export function quotaScope(provider: UsageProvider, providerId?: string, modelId?: string): string {
   const matches = provider.providerIds.includes(providerId ?? "");
-  const id = matches ? providerId! : provider.providerIds[0]!;
+  // Grok aliases use the same billing request; credential identity still keeps accounts apart.
+  const id = provider.id === "grok" || !matches ? provider.providerIds[0]! : providerId!;
   const bucket =
     provider.id === "openai" && matches && modelId === "gpt-5.3-codex-spark" ? "spark" : "default";
   return `${id}:${bucket}`;
@@ -19,6 +21,11 @@ export function failureDelay(error: UsageError, failures: number): number {
   );
 }
 
+export function freshWithin(fetchedAt: number, current: number, ttl: number): boolean {
+  const age = current - fetchedAt;
+  return age >= 0 && age < ttl;
+}
+
 type Reading = { snapshot: UsageSnapshot; fetchedAt: number };
 type Pending = {
   controller: AbortController;
@@ -31,6 +38,7 @@ type Entry = {
   reading?: Reading;
   error?: UsageError;
   retryAt: number;
+  retryStartedAt: number;
   failures: number;
   pending?: Pending;
 };
@@ -40,9 +48,18 @@ export class UsageQueryCache {
   private entries = new Map<string, Entry>();
   constructor(private options: { now?: () => number; fetchImpl?: FetchLike } = {}) {}
 
-  clear(providerId?: string): void {
+  private pruneIdle(protectedEntry?: Entry): void {
     for (const [key, entry] of this.entries) {
-      if (providerId && !entry.scope.startsWith(`${providerId}:`)) continue;
+      if (this.entries.size <= 128) break;
+      if (entry !== protectedEntry && !entry.pending) this.entries.delete(key);
+    }
+  }
+
+  clear(providerId?: string): void {
+    const scopeId =
+      providerId && GROK_PROVIDERS.includes(providerId) ? GROK_PROVIDERS[0] : providerId;
+    for (const [key, entry] of this.entries) {
+      if (scopeId && !entry.scope.startsWith(`${scopeId}:`)) continue;
       this.entries.delete(key);
       entry.pending?.controller.abort();
     }
@@ -64,17 +81,24 @@ export class UsageQueryCache {
     const key = JSON.stringify([scope, credential.fingerprint, credential.accountId]);
     let entry = this.entries.get(key);
     if (!entry) {
-      entry = { scope, failures: 0, retryAt: 0 };
+      entry = { scope, failures: 0, retryAt: 0, retryStartedAt: 0 };
       this.entries.set(key, entry);
       // Account rosters can change for the lifetime of a session. Retain at most
       // 128 idle entries, while allowing all in-flight requests to finish.
-      for (const [oldKey, old] of this.entries) {
-        if (this.entries.size <= 128) break;
-        if (old !== entry && !old.pending) this.entries.delete(oldKey);
-      }
+      this.pruneIdle(entry);
+    } else {
+      // Keep frequently queried accounts when a changing roster fills the cache.
+      this.entries.delete(key);
+      this.entries.set(key, entry);
     }
-    if (entry.error && now() < entry.retryAt) throw entry.error;
-    if (!entry.error && entry.reading && now() - entry.reading.fetchedAt < options.ttl)
+    const checkedAt = now();
+    if (entry.error && checkedAt >= entry.retryStartedAt && checkedAt < entry.retryAt)
+      throw entry.error;
+    if (
+      !entry.error &&
+      entry.reading &&
+      freshWithin(entry.reading.fetchedAt, checkedAt, options.ttl)
+    )
       return entry.reading;
     if (!entry.pending) {
       const current = entry;
@@ -99,6 +123,7 @@ export class UsageQueryCache {
             current.error = undefined;
             current.failures = 0;
             current.retryAt = 0;
+            current.retryStartedAt = 0;
           }
           return reading;
         })
@@ -110,13 +135,17 @@ export class UsageQueryCache {
               : new UsageError("transport", `${provider.name} usage is unavailable.`);
           if (this.entries.get(key) === current) {
             current.error = failure;
-            current.retryAt = now() + failureDelay(failure, ++current.failures);
+            current.retryStartedAt = now();
+            current.retryAt = current.retryStartedAt + failureDelay(failure, ++current.failures);
           }
           throw failure;
         })
         .finally(() => {
           pending.settled = true;
           if (current.pending === pending) current.pending = undefined;
+          // A burst of more than 128 concurrent accounts cannot be pruned
+          // during insertion; reclaim the excess as requests finish.
+          this.pruneIdle();
         });
     }
     const current = entry;
