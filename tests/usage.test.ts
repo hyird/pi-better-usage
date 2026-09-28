@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, type UsageConfig } from "../src/config.ts";
 import type { UsageCredential } from "../src/credential.ts";
 import {
@@ -260,28 +260,6 @@ describe("fetchUsage", () => {
         ),
       ]),
     ).rejects.toMatchObject({ name: "AbortError" });
-  });
-
-  it("limits a streamed response without Content-Length", async () => {
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(256 * 1024 + 1));
-        controller.close();
-      },
-    });
-    const json = vi.fn(async () => ({}));
-    await expect(
-      fetchUsage(credential(), {
-        fetchImpl: async () => ({
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          body,
-          json,
-        }),
-      }),
-    ).rejects.toMatchObject({ kind: "oversize" });
-    expect(json).not.toHaveBeenCalled();
   });
 
   it("reports an invalid body", async () => {

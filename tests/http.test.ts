@@ -1,5 +1,35 @@
 import { expect, it, vi } from "vitest";
-import { fetchWithTransportRetry, type FetchLike, type UsageResponse } from "../src/http.ts";
+import {
+  fetchWithTransportRetry,
+  readJsonResponse,
+  MAX_RESPONSE_BYTES,
+  type FetchLike,
+  type UsageResponse,
+} from "../src/http.ts";
+
+it("bounds accumulated response bytes and releases oversized streams", async () => {
+  for (const size of [MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES + 1]) {
+    const bytes = new TextEncoder().encode(JSON.stringify("x".repeat(size - 2)));
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let offset = 0; offset < bytes.length; offset += 64 * 1024)
+          controller.enqueue(bytes.subarray(offset, offset + 64 * 1024));
+        if (size === MAX_RESPONSE_BYTES) controller.close();
+      },
+      cancel,
+    });
+    const reading = readJsonResponse(new Response(body));
+    if (size === MAX_RESPONSE_BYTES) {
+      expect(((await reading) as string).length).toBe(size - 2);
+      expect(cancel).not.toHaveBeenCalled();
+    } else {
+      await expect(reading).rejects.toMatchObject({ kind: "oversize" });
+      expect(cancel).toHaveBeenCalledOnce();
+    }
+    expect(body.locked).toBe(false);
+  }
+});
 
 it.each([false, true])(
   "discards a response arriving around cancellation: %s",

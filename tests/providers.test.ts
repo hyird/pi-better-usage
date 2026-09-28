@@ -301,19 +301,6 @@ describe("subscription requests", () => {
     expect(snapshot.windows.weekly?.percentUsed).toBe(10);
     expect(urls).toEqual([GROK_USER_URL, GROK_USAGE_URL, GROK_USAGE_URL]);
   });
-  it("rejects an OpenAI response whose stream exceeds the limit without a size header", async () => {
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(256 * 1024 + 1));
-        controller.close();
-      },
-    });
-    await expect(
-      fetchOpenAIUsage(credential, {
-        fetchImpl: async () => ({ ...ok({}), body }),
-      }),
-    ).rejects.toMatchObject({ kind: "oversize" });
-  });
   it("passes cancellation into the request", async () => {
     const controller = new AbortController();
     controller.abort();
