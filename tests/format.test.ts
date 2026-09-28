@@ -34,6 +34,8 @@ describe("sanitizeLabel", () => {
     expect(sanitizeLabel("zh\nong\u0007")).toBe("zh ong");
     expect(sanitizeLabel("a\tb")).toBe("a b");
     expect(sanitizeLabel("del\u007fchar")).toBe("del char");
+    for (let code = 0x80; code <= 0x9f; code++)
+      expect(sanitizeLabel(`a${String.fromCharCode(code)}b`)).toBe("a b");
   });
 
   it("collapses runs of whitespace and trims", () => {
@@ -47,6 +49,7 @@ describe("sanitizeLabel", () => {
 
   it("preserves long labels and complete email addresses", () => {
     expect(sanitizeLabel("x".repeat(40))).toBe("x".repeat(40));
+    expect(sanitizeLabel("工作账号 🚀 café")).toBe("工作账号 🚀 café");
     expect(sanitizeLabel("deleted.user.0054@gmail.com")).toBe("deleted.user.0054@gmail.com");
   });
 });

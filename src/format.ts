@@ -15,12 +15,13 @@ export function formatPercent(value: number): string {
 
 /**
  * Pooled account labels come from pi-multiprovider rather than from us, so keep
- * them to a single short line before they reach the terminal.
+ * them on one line without terminal controls, preserving the complete label.
  */
 export function sanitizeLabel(label: string): string | undefined {
-  const flattened = Array.from(label, (char) =>
-    char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f ? " " : char,
-  ).join("");
+  const flattened = Array.from(label, (char) => {
+    const code = char.charCodeAt(0);
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : char;
+  }).join("");
   const trimmed = flattened.replace(/\s+/g, " ").trim();
   if (!trimmed) return undefined;
   return trimmed;
