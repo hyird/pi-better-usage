@@ -6,16 +6,16 @@ import {
   type UsageCredential,
 } from "./credential.ts";
 import { GROK_PROVIDERS, object, resolveSubscriptionCredential } from "./subscription-auth.ts";
+import { fetchUsage, type UsageSnapshot, type UsageWindow } from "./usage.ts";
 import {
-  fetchUsage,
+  discardResponseBody,
   fetchWithTransportRetry,
   readJsonResponse,
   retryAfterMs,
   UsageError,
+  MAX_RESPONSE_BYTES,
   type FetchLike,
-  type UsageSnapshot,
-  type UsageWindow,
-} from "./usage.ts";
+} from "./http.ts";
 
 export type QueryOptions = {
   signal?: AbortSignal;
@@ -178,6 +178,7 @@ async function requestJson(
       options.signal,
     );
     if (!response.ok) {
+      discardResponseBody(response);
       const auth = response.status === 401 || response.status === 403;
       throw new UsageError(
         auth ? "auth" : "http",
@@ -188,8 +189,10 @@ async function requestJson(
         retryAfterMs(response.headers.get("retry-after"), options.now),
       );
     }
-    if (Number(response.headers.get("content-length")) > 256 * 1024)
+    if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
+      discardResponseBody(response);
       throw new UsageError("oversize", `${name} usage response is too large.`);
+    }
     try {
       return await readJsonResponse(response, options.signal);
     } catch (error) {

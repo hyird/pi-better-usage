@@ -176,12 +176,14 @@ it("opens a focused overlay immediately, without printing to chat", async () => 
   expect(notify).not.toHaveBeenCalled();
 });
 
-it("cancels its pending load when the overlay closes", async () => {
+it.each(["escape", "host failure"])("cancels its pending load after %s", async (closing) => {
   let component!: UsagePanel;
   let loadingSignal: AbortSignal | undefined;
+  let fail!: () => void;
   const custom = vi.fn(
     (factory) =>
-      new Promise<void>((resolve) => {
+      new Promise<void>((resolve, reject) => {
+        fail = () => reject(new Error("Overlay initialization failed"));
         component = factory({ terminal: { rows: 30 }, requestRender: vi.fn() }, theme, {}, resolve);
       }),
   );
@@ -196,8 +198,13 @@ it("cancels its pending load when the overlay closes", async () => {
   await Promise.resolve();
   await Promise.resolve();
   expect(loadingSignal?.aborted).toBe(false);
-  component.handleInput("\u001b");
-  await task;
+  if (closing === "escape") {
+    component.handleInput("\u001b");
+    await task;
+  } else {
+    fail();
+    await expect(task).rejects.toThrow("Overlay initialization failed");
+  }
   expect(loadingSignal?.aborted).toBe(true);
 });
 

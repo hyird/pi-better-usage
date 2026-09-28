@@ -6,7 +6,8 @@ import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { UsageCredential } from "../src/credential.ts";
 import type { MultiproviderService, SavedUsageAccount } from "../src/multiprovider.ts";
 import { fetchGrokUsage, GROK_USER_URL, parseOpenAIUsage } from "../src/providers.ts";
-import { accountLabel, formatDetail, usageSegments, type FetchLike } from "../src/usage.ts";
+import { accountLabel, formatDetail, usageSegments } from "../src/usage.ts";
+import { type FetchLike } from "../src/http.ts";
 
 const credential: UsageCredential = {
   apiKey: "fixture",

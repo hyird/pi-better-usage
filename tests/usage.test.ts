@@ -11,11 +11,10 @@ import {
   leftPercent,
   parseUsagePayload,
   severityForLeftPercent,
-  UsageError,
   usageSegments,
-  type FetchLike,
   type UsageSnapshot,
 } from "../src/usage.ts";
+import { UsageError, type FetchLike } from "../src/http.ts";
 
 const NOW = Date.parse("2026-09-22T12:00:00Z");
 
@@ -235,22 +234,6 @@ describe("fetchUsage", () => {
     expect(requests).toEqual(["Bearer secret", "Bearer secret"]);
   });
 
-  it("stops waiting when a custom transport ignores cancellation", async () => {
-    const controller = new AbortController();
-    const fetchImpl = vi.fn<FetchLike>(async () => new Promise<never>(() => {}));
-    const pending = fetchUsage(credential(), { fetchImpl, signal: controller.signal });
-    controller.abort();
-    await expect(
-      Promise.race([
-        pending,
-        new Promise<never>((_resolve, reject) =>
-          setTimeout(() => reject(new Error("Cancellation did not settle the request")), 100),
-        ),
-      ]),
-    ).rejects.toMatchObject({ name: "AbortError" });
-    expect(fetchImpl).toHaveBeenCalledOnce();
-  });
-
   it("stops waiting when response JSON ignores cancellation", async () => {
     const controller = new AbortController();
     let parsing!: () => void;
@@ -299,12 +282,6 @@ describe("fetchUsage", () => {
       }),
     ).rejects.toMatchObject({ kind: "oversize" });
     expect(json).not.toHaveBeenCalled();
-  });
-
-  it("rejects an oversized response before reading it", async () => {
-    await expect(
-      fetchUsage(credential(), { fetchImpl: respond({ contentLength: String(5_000_000) }) }),
-    ).rejects.toMatchObject({ kind: "oversize" });
   });
 
   it("reports an invalid body", async () => {

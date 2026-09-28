@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { registerUsage } from "../index.ts";
 import { ACCOUNTS_SERVICE_EVENT, type MultiproviderService } from "../src/multiprovider.ts";
 import { GROK_USER_URL, OPENAI_USAGE_URL } from "../src/providers.ts";
-import type { FetchLike } from "../src/usage.ts";
+import type { FetchLike } from "../src/http.ts";
 import type { UsagePanel } from "../src/usage-panel.ts";
 const cleanups: (() => void)[] = [];
 afterEach(() => {

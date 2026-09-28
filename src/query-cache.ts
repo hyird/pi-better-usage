@@ -1,7 +1,8 @@
 import type { UsageCredential } from "./credential.ts";
 import type { UsageProvider } from "./providers.ts";
 import { GROK_PROVIDERS } from "./subscription-auth.ts";
-import { UsageError, type FetchLike, type UsageSnapshot } from "./usage.ts";
+import { type UsageSnapshot } from "./usage.ts";
+import { UsageError, type FetchLike } from "./http.ts";
 
 export function quotaScope(provider: UsageProvider, providerId?: string, modelId?: string): string {
   const matches = provider.providerIds.includes(providerId ?? "");

@@ -134,27 +134,35 @@ export async function showUsagePanel(
     ctx.ui.notify(report, "info");
     return;
   }
-  await ctx.ui.custom<void>(
-    (tui, theme, _keys, done) => {
-      const panel = new UsagePanel(
-        theme,
-        () => tui.terminal.rows,
-        () => tui.requestRender(),
-        () => done(),
-        () => controller.abort(),
-      );
-      // Display immediately, so Esc also works while network requests are pending.
-      void Promise.resolve()
-        .then(() => {
-          controller.signal.throwIfAborted();
-          return load(controller.signal);
-        })
-        .then(
-          (text) => panel.setContent(text),
-          () => panel.setContent("Could not load usage. Close this panel and try /usage again."),
+  let activePanel: UsagePanel | undefined;
+  try {
+    await ctx.ui.custom<void>(
+      (tui, theme, _keys, done) => {
+        const panel = new UsagePanel(
+          theme,
+          () => tui.terminal.rows,
+          () => tui.requestRender(),
+          () => done(),
+          () => controller.abort(),
         );
-      return panel;
-    },
-    { overlay: true, overlayOptions: { width: "90%", maxHeight: "80%", anchor: "center" } },
-  );
+        activePanel = panel;
+        // Display immediately, so Esc also works while network requests are pending.
+        void Promise.resolve()
+          .then(() => {
+            controller.signal.throwIfAborted();
+            return load(controller.signal);
+          })
+          .then(
+            (text) => panel.setContent(text),
+            () => panel.setContent("Could not load usage. Close this panel and try /usage again."),
+          );
+        return panel;
+      },
+      { overlay: true, overlayOptions: { width: "90%", maxHeight: "80%", anchor: "center" } },
+    );
+  } finally {
+    // Pi may reject overlay initialization before it can dispose the component.
+    controller.abort();
+    activePanel?.dispose();
+  }
 }

@@ -9,9 +9,68 @@ import {
   parseOpenAIUsage,
 } from "../src/providers.ts";
 import type { UsageCredential } from "../src/credential.ts";
-import type { FetchLike } from "../src/usage.ts";
+import { fetchUsage } from "../src/usage.ts";
+import { type FetchLike } from "../src/http.ts";
 
 const NOW = Date.parse("2026-09-22T12:00:00Z");
+it.each([
+  ["OpenCode Go", fetchUsage],
+  ["OpenAI", fetchOpenAIUsage],
+  ["Grok", fetchGrokUsage],
+] as const)(
+  "%s distinguishes interrupted bodies from malformed JSON",
+  async (_name, fetchUsageForProvider) => {
+    for (const interrupted of [true, false]) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"partial":'));
+        },
+        pull(controller) {
+          if (interrupted) controller.error(new TypeError("connection reset: secret-token"));
+          else controller.close();
+        },
+      });
+      const fetchImpl = vi.fn<FetchLike>(async () => new Response(body));
+      await expect(fetchUsageForProvider(credential, { fetchImpl })).rejects.toMatchObject({
+        kind: interrupted ? "transport" : "invalid",
+        message: expect.not.stringContaining("secret-token"),
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(body.locked).toBe(false);
+    }
+  },
+);
+
+it.each([
+  ["OpenCode Go", fetchUsage],
+  ["OpenAI", fetchOpenAIUsage],
+  ["Grok", fetchGrokUsage],
+] as const)(
+  "%s cancels unread error and oversized bodies",
+  async (_name, fetchUsageForProvider) => {
+    for (const oversized of [false, true]) {
+      // A transport may take indefinitely to finish cancellation. Initiating it
+      // must release the response without delaying the useful usage error.
+      const cancel = vi.fn(() => new Promise<void>(() => {}));
+      const body = new ReadableStream<Uint8Array>({ cancel });
+      const json = vi.fn();
+      const fetchImpl = vi.fn<FetchLike>(async () => ({
+        ok: oversized,
+        status: oversized ? 200 : 429,
+        headers: { get: (name) => (name === "content-length" && oversized ? "9999999" : null) },
+        body,
+        json,
+      }));
+      await expect(fetchUsageForProvider(credential, { fetchImpl })).rejects.toMatchObject({
+        kind: oversized ? "oversize" : "http",
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(json).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  },
+);
+
 const credential: UsageCredential = {
   apiKey: "secret-token",
   accountId: "test-account",
@@ -241,15 +300,6 @@ describe("subscription requests", () => {
     const snapshot = await fetchGrokUsage(credential, { fetchImpl });
     expect(snapshot.windows.weekly?.percentUsed).toBe(10);
     expect(urls).toEqual([GROK_USER_URL, GROK_USAGE_URL, GROK_USAGE_URL]);
-  });
-  it("rejects oversized responses before parsing", async () => {
-    const json = vi.fn();
-    await expect(
-      fetchOpenAIUsage(credential, {
-        fetchImpl: async () => ({ ...ok({}), headers: { get: () => "9999999" }, json }),
-      }),
-    ).rejects.toMatchObject({ kind: "oversize" });
-    expect(json).not.toHaveBeenCalled();
   });
   it("rejects an OpenAI response whose stream exceeds the limit without a size header", async () => {
     const body = new ReadableStream<Uint8Array>({

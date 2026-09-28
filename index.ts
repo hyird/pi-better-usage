@@ -26,12 +26,11 @@ import { piAgentDir } from "./src/paths.ts";
 import {
   accountLabel,
   formatDetail,
-  UsageError,
   usageSegments,
-  type FetchLike,
   type UsageSegment,
   type UsageSnapshot,
 } from "./src/usage.ts";
+import { UsageError, type FetchLike } from "./src/http.ts";
 
 export * from "./src/config.ts";
 export * from "./src/credential.ts";

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { registerUsage } from "../index.ts";
 import { ACCOUNTS_SERVICE_EVENT, type SavedUsageAccount } from "../src/multiprovider.ts";
-import type { FetchLike, UsageResponse } from "../src/usage.ts";
+import type { FetchLike, UsageResponse } from "../src/http.ts";
 
 const cleanups: (() => void)[] = [];
 beforeEach(() => vi.useFakeTimers());

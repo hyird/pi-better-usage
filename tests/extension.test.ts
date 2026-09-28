@@ -11,7 +11,7 @@ import {
   type MultiproviderService,
 } from "../src/multiprovider.ts";
 import { USAGE_PROVIDERS, type UsageProvider } from "../src/providers.ts";
-import type { FetchLike } from "../src/usage.ts";
+import type { FetchLike } from "../src/http.ts";
 
 const NOW = Date.parse("2026-09-22T12:00:00Z");
 

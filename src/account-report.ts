@@ -6,7 +6,8 @@ import { accountEmail } from "./account-identity.ts";
 import type { MultiproviderService, SavedUsageAccount } from "./multiprovider.ts";
 import { USAGE_PROVIDERS } from "./providers.ts";
 import type { UsageQueryCache } from "./query-cache.ts";
-import { formatDetail, UsageError, type FetchLike, type UsageSeverity } from "./usage.ts";
+import { formatDetail, type UsageSeverity } from "./usage.ts";
+import { UsageError, type FetchLike } from "./http.ts";
 
 /** Read every profile in isolation. A failed account must never fall back to the current login. */
 export async function reportSavedAccounts(

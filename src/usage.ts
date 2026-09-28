@@ -1,12 +1,19 @@
+import {
+  UsageError,
+  retryAfterMs,
+  discardResponseBody,
+  fetchWithTransportRetry,
+  readJsonResponse,
+  MAX_RESPONSE_BYTES,
+  type FetchLike,
+  type UsageResponse,
+} from "./http.ts";
 import type { UsageConfig } from "./config.ts";
 import type { UsageCredential } from "./credential.ts";
-import { awaitWithAbort } from "./abort.ts";
 import { accountEmail } from "./account-identity.ts";
 import { clampPercent, formatPercent, sanitizeLabel } from "./format.ts";
 import { USAGE_URL, WINDOW_LABELS, WINDOW_NAMES, type WindowKey } from "./identity.ts";
 
-const REQUEST_TIMEOUT_MS = 15_000;
-const MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_STATUS_LENGTH = 32;
 const MAX_RESET_LENGTH = 64;
 const MAX_RESET_MS = 400 * 24 * 60 * 60_000;
@@ -26,29 +33,6 @@ export type UsageSnapshot = {
   providerLabel?: string;
   windows: Partial<Record<WindowKey, UsageWindow>>;
 };
-
-export type UsageErrorKind = "auth" | "http" | "invalid" | "oversize" | "transport";
-
-export class UsageError extends Error {
-  readonly kind: UsageErrorKind;
-  readonly status?: number;
-  readonly retryAfterMs?: number;
-
-  constructor(kind: UsageErrorKind, message: string, status?: number, retryAfterMs?: number) {
-    super(message);
-    this.name = "UsageError";
-    this.kind = kind;
-    this.status = status;
-    this.retryAfterMs = retryAfterMs;
-  }
-}
-
-export function retryAfterMs(value: string | null, now = Date.now()): number | undefined {
-  if (!value?.trim()) return undefined;
-  const seconds = Number(value);
-  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - now;
-  return Number.isFinite(delay) && delay >= 0 ? delay : undefined;
-}
 
 /* ----------------------------------------------------------------- parser -- */
 
@@ -136,79 +120,6 @@ function httpError(status: number, retryAfter?: number): UsageError {
   );
 }
 
-export type UsageResponse = {
-  ok: boolean;
-  status: number;
-  headers: { get(name: string): string | null };
-  body?: ReadableStream<Uint8Array> | null;
-  json(): Promise<unknown>;
-};
-
-export type FetchLike = (
-  input: string,
-  init?: { headers?: Record<string, string>; signal?: AbortSignal; redirect?: "error" },
-) => Promise<UsageResponse>;
-
-/** Bound body reads even when Content-Length is absent or a custom transport ignores abort. */
-export async function readJsonResponse(
-  response: UsageResponse,
-  callerSignal?: AbortSignal,
-): Promise<unknown> {
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-  const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
-  try {
-    if (!response.body || typeof response.body.getReader !== "function")
-      return await awaitWithAbort(response.json(), signal);
-    const reader = response.body.getReader();
-    let done = false;
-    try {
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      while (true) {
-        const part = await awaitWithAbort(reader.read(), signal);
-        if (part.done) break;
-        size += part.value.byteLength;
-        if (size > MAX_RESPONSE_BYTES)
-          throw new UsageError("oversize", "Usage response is too large.");
-        chunks.push(part.value);
-      }
-      done = true;
-      return JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
-    } finally {
-      if (!done) void reader.cancel().catch(() => undefined);
-      try {
-        reader.releaseLock();
-      } catch {
-        /* An interrupted read may still hold the lock. */
-      }
-    }
-  } catch (error) {
-    callerSignal?.throwIfAborted();
-    if (timeout.aborted) throw new UsageError("transport", "Usage response timed out.");
-    throw error;
-  }
-}
-
-/** Retry one failed connection without replaying HTTP errors or a caller cancellation. */
-export async function fetchWithTransportRetry(
-  fetchImpl: FetchLike,
-  url: string,
-  headers: Record<string, string>,
-  callerSignal?: AbortSignal,
-): Promise<UsageResponse> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    callerSignal?.throwIfAborted();
-    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
-    try {
-      return await awaitWithAbort(fetchImpl(url, { headers, signal, redirect: "error" }), signal);
-    } catch (error) {
-      if (callerSignal?.aborted || attempt === 1) throw error;
-    }
-  }
-  throw new Error("Unreachable request state");
-}
-
 export async function fetchUsage(
   credential: UsageCredential,
   options: { signal?: AbortSignal; fetchImpl?: FetchLike; now?: number } = {},
@@ -229,14 +140,17 @@ export async function fetchUsage(
     options.signal?.throwIfAborted();
     throw new UsageError("transport", "OpenCode Go usage request failed or timed out.");
   }
-  if (!response.ok)
+  if (!response.ok) {
+    discardResponseBody(response);
     throw httpError(
       response.status,
       retryAfterMs(response.headers.get("retry-after"), options.now),
     );
+  }
 
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    discardResponseBody(response);
     throw new UsageError("oversize", "OpenCode Go usage returned an oversized response.");
   }
   let payload: unknown;

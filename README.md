@@ -146,6 +146,10 @@ bun run check
 
 The checks cover TypeScript, lint, formatting, and tests for response parsing, authentication, account isolation, cached display, and request cancellation. HTTP tests use fixtures rather than live accounts.
 
+Use kebab-case file names and keep tests in `tests/` as `<module>.test.ts`. Name cross-module tests `<feature>-integration.test.ts` and put executable test fixtures in `tests/fixtures/`. Keep regressions in the owning test suite; avoid separate files for a single check. Use Bun and commit only `bun.lock` for dependency resolution.
+
+`src/http.ts` owns HTTP timeouts, retries, response limits and transport errors. Provider parsing and usage display remain in their domain modules.
+
 OpenAI and Grok usage queries rely on private service endpoints, which may change. The extension only reads identity and usage data; it does not send model requests or modify subscription limits.
 
 ## License

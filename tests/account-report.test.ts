@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { reportSavedAccounts } from "../src/account-report.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { MultiproviderService, SavedUsageAccount } from "../src/multiprovider.ts";
-import type { FetchLike } from "../src/usage.ts";
+import type { FetchLike } from "../src/http.ts";
 
 it("reports every account with labels and Current, isolates credentials and failures", async () => {
   const accounts: SavedUsageAccount[] = [

@@ -1,7 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { UsageQueryCache } from "../src/query-cache.ts";
 import type { UsageProvider } from "../src/providers.ts";
-import { UsageError, retryAfterMs, type UsageSnapshot } from "../src/usage.ts";
+import { type UsageSnapshot } from "../src/usage.ts";
+import { UsageError, retryAfterMs } from "../src/http.ts";
 
 const credential = { apiKey: "fixture", fingerprint: "one", label: "test", source: "pi" as const };
 const snapshot: UsageSnapshot = { capturedAt: 0, windows: {} };

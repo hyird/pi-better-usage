@@ -6,7 +6,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { awaitWithAbort } from "./abort.ts";
 import { extractApiKey, type CredentialResolver, type UsageCredential } from "./credential.ts";
 import { piAgentDir, expandTildePath } from "./paths.ts";
-import { UsageError } from "./usage.ts";
+import { UsageError } from "./http.ts";
 import { accountEmail, emailFromToken } from "./account-identity.ts";
 
 export const GROK_PROVIDERS = ["xai", "xai-oauth", "xai-auth"];
