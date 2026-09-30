@@ -5,7 +5,12 @@ import {
   type CredentialResolver,
   type UsageCredential,
 } from "./credential.ts";
-import { GROK_PROVIDERS, object, resolveSubscriptionCredential } from "./subscription-auth.ts";
+import {
+  GROK_PROVIDERS,
+  OPENAI_PROVIDERS,
+  object,
+  resolveSubscriptionCredential,
+} from "./subscription-auth.ts";
 import { fetchUsage, type UsageSnapshot, type UsageWindow } from "./usage.ts";
 import {
   discardResponseBody,
@@ -215,7 +220,10 @@ export async function fetchOpenAIUsage(
   options: QueryOptions = {},
 ): Promise<UsageSnapshot> {
   if (!credential.accountId)
-    throw new UsageError("auth", "OpenAI Codex account ID is missing. Use /login openai-codex.");
+    throw new UsageError(
+      "auth",
+      "ChatGPT account ID is missing. Use /login openai (ChatGPT subscription).",
+    );
   const data = await requestJson(
     OPENAI_USAGE_URL,
     { Authorization: `Bearer ${credential.apiKey}`, "chatgpt-account-id": credential.accountId },
@@ -257,8 +265,8 @@ export const USAGE_PROVIDERS: readonly UsageProvider[] = [
   {
     id: "openai",
     name: "OpenAI Codex",
-    providerIds: ["openai-codex"],
-    loginHint: "/login openai-codex",
+    providerIds: OPENAI_PROVIDERS,
+    loginHint: "/login openai (ChatGPT subscription)",
     resolve: (ctx, r, s) => resolveSubscriptionCredential("openai", ctx, r, s),
     fetch: fetchOpenAIUsage,
   },

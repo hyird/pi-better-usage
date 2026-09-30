@@ -269,43 +269,46 @@ it.each([{ label: "renamed" }, { email: "new@example.com" }, { providerId: "xai"
   },
 );
 
-it("shows an inactive OAuth account after its own authentication refreshes the credential", async () => {
-  const account: SavedUsageAccount = {
-    id: "openai-codex/work",
-    label: "work",
-    providerId: "openai-codex",
-    authKind: "oauth",
-    active: false,
-    credentialRevision: "expired-token",
-  };
-  const access = `h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test" } })).toString("base64url")}.s`;
-  const service = {
-    listAccounts: async () => [{ ...account, credentialRevision: "refreshed-token" }],
-    resolveAccountAuth: async () => ({
-      accessToken: access,
+it.each(["openai", "openai-codex"])(
+  "shows an inactive %s OAuth account after its own authentication refreshes the credential",
+  async (providerId) => {
+    const account: SavedUsageAccount = {
+      id: `${providerId}/work`,
       label: "work",
-      credentialRevision: "refreshed-token",
-    }),
-  } as unknown as MultiproviderService;
-  const ctx = {
-    model: { provider: "openai-codex", id: "test" },
-    modelRegistry: {},
-  } as unknown as ExtensionContext;
-  const onVerifiedRoster = vi.fn();
-  const result = await reportSavedAccounts(ctx, service, [account], DEFAULT_CONFIG, {
-    onVerifiedRoster,
-    fetchImpl: async () => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => ({ rate_limit: { primary_window: { used_percent: 25 } } }),
-    }),
-  });
-  expect(result).toContain("OpenAI Codex usage · work · Subscription");
-  expect(result).toContain("75% left");
-  const refreshed = [{ ...account, credentialRevision: "refreshed-token" }];
-  expect(onVerifiedRoster).toHaveBeenCalledWith(refreshed, refreshed);
-});
+      providerId,
+      authKind: "oauth",
+      active: false,
+      credentialRevision: "expired-token",
+    };
+    const access = `h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test" } })).toString("base64url")}.s`;
+    const service = {
+      listAccounts: async () => [{ ...account, credentialRevision: "refreshed-token" }],
+      resolveAccountAuth: async () => ({
+        accessToken: access,
+        label: "work",
+        credentialRevision: "refreshed-token",
+      }),
+    } as unknown as MultiproviderService;
+    const ctx = {
+      model: { provider: providerId, id: "test" },
+      modelRegistry: {},
+    } as unknown as ExtensionContext;
+    const onVerifiedRoster = vi.fn();
+    const result = await reportSavedAccounts(ctx, service, [account], DEFAULT_CONFIG, {
+      onVerifiedRoster,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ rate_limit: { primary_window: { used_percent: 25 } } }),
+      }),
+    });
+    expect(result).toContain("OpenAI Codex usage · work · Subscription");
+    expect(result).toContain("75% left");
+    const refreshed = [{ ...account, credentialRevision: "refreshed-token" }];
+    expect(onVerifiedRoster).toHaveBeenCalledWith(refreshed, refreshed);
+  },
+);
 
 it("keeps the usage report when a final account-list refresh is briefly unavailable", async () => {
   const account: SavedUsageAccount = {

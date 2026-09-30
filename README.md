@@ -6,11 +6,11 @@ One `/usage` command brings OpenAI Codex, Grok, and OpenCode Go together in a si
 
 ## Supported providers
 
-| Service          | Pi provider                    | Subscription windows                                                                   |
-| ---------------- | ------------------------------ | -------------------------------------------------------------------------------------- |
-| OpenAI Codex     | `openai-codex`                 | Five-hour and weekly limits, including weekly-only plans and separate Spark quota      |
-| Grok / SuperGrok | `xai`, `xai-oauth`, `xai-auth` | Current subscription period, including unified weekly usage and legacy monthly credits |
-| OpenCode Go      | `opencode-go`                  | Five-hour, weekly, and monthly limits                                                  |
+| Service                | Pi provider                    | Subscription windows                                                                   |
+| ---------------------- | ------------------------------ | -------------------------------------------------------------------------------------- |
+| ChatGPT / OpenAI Codex | `openai`, `openai-codex`       | Five-hour and weekly limits, including weekly-only plans and separate Spark quota      |
+| Grok / SuperGrok       | `xai`, `xai-oauth`, `xai-auth` | Current subscription period, including unified weekly usage and legacy monthly credits |
+| OpenCode Go            | `opencode-go`                  | Five-hour, weekly, and monthly limits                                                  |
 
 The extension tracks subscription quota. OpenAI and xAI API spending, and OpenCode Zen pay-as-you-go balances, are outside its scope.
 
@@ -21,6 +21,8 @@ pi install git:github.com/hyird/pi-better-usage
 ```
 
 Run `/reload` inside Pi, then `/usage`.
+
+Tested with Pi 0.99.1. Prefer native `/login openai` → **Sign in with ChatGPT**, as recommended by [Pi's provider documentation](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/providers.md). The legacy `openai-codex` login remains supported. API-key sessions have no subscription quota; selecting `openai` never borrows a legacy provider's account. A subscription token must expose a ChatGPT account ID and be accepted by the usage endpoint; otherwise the reading is unavailable.
 
 When [hyird/pi-multiprovider](https://github.com/hyird/pi-multiprovider) is installed, `/usage` reports **every saved account**, with its label and a `[Current]` marker based on Pi's `auth.json`. A current login missing from the saved pool appears separately as `Unmanaged [Current]`. Unsupported providers or failed accounts get their own message without hiding the other results. Background display shows the current account only; account switches immediately clear old quota and refresh its label and usage.
 
@@ -99,11 +101,11 @@ The account label appears only for a pooled account. The reset countdown belongs
 
 ## Sign in
 
-| Service      | Setup                                                                                                                     |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| OpenAI Codex | Run `/login openai-codex` in Pi.                                                                                          |
-| Grok         | Run `/login xai` or sign in through the corresponding OAuth provider. An existing `grok login` session is also supported. |
-| OpenCode Go  | Run `/login opencode-go`, or set `OPENCODE_API_KEY`.                                                                      |
+| Service                | Setup                                                                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| ChatGPT / OpenAI Codex | Run `/login openai` and select Sign in with ChatGPT. Existing `/login openai-codex` accounts remain supported.            |
+| Grok                   | Run `/login xai` or sign in through the corresponding OAuth provider. An existing `grok login` session is also supported. |
+| OpenCode Go            | Run `/login opencode-go`, or set `OPENCODE_API_KEY`.                                                                      |
 
 OpenAI and Grok require subscription OAuth credentials; ordinary API keys cannot report their subscription quota.
 
@@ -149,6 +151,8 @@ The checks cover TypeScript, lint, formatting, and tests for response parsing, a
 Use kebab-case file names and keep tests in `tests/` as `<module>.test.ts`. Name cross-module tests `<feature>-integration.test.ts` and put executable test fixtures in `tests/fixtures/`. Keep regressions in the owning test suite; avoid separate files for a single check. Use Bun and commit only `bun.lock` for dependency resolution.
 
 `src/http.ts` owns HTTP timeouts, retries, response limits and transport errors. Provider parsing and usage display remain in their domain modules.
+
+Host-provided Pi modules remain wildcard peer dependencies, with exact 0.99.1 development dependencies, following [Pi's package contract](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/packages.md#declare-dependencies). Authentication goes through Pi's public model registry and the companion account service; provider streams are left to Pi.
 
 OpenAI and Grok usage queries rely on private service endpoints, which may change. The extension only reads identity and usage data; it does not send model requests or modify subscription limits.
 

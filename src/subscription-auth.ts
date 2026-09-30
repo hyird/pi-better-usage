@@ -10,6 +10,7 @@ import { UsageError } from "./http.ts";
 import { accountEmail, emailFromToken } from "./account-identity.ts";
 
 export const GROK_PROVIDERS = ["xai", "xai-oauth", "xai-auth"];
+export const OPENAI_PROVIDERS = ["openai", "openai-codex"];
 export function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -86,8 +87,12 @@ export async function resolveSubscriptionCredential(
   const codex = kind === "openai";
   const selectedGrokProvider =
     !codex && GROK_PROVIDERS.includes(ctx.model?.provider ?? "") ? ctx.model!.provider : undefined;
+  const selectedOpenAIProvider =
+    codex && OPENAI_PROVIDERS.includes(ctx.model?.provider ?? "") ? ctx.model!.provider : undefined;
   const ids = codex
-    ? ["openai-codex"]
+    ? selectedOpenAIProvider
+      ? [selectedOpenAIProvider]
+      : OPENAI_PROVIDERS
     : selectedGrokProvider
       ? [selectedGrokProvider]
       : GROK_PROVIDERS;
@@ -101,9 +106,9 @@ export async function resolveSubscriptionCredential(
         const active = await awaitWithAbort(service.getActiveAccount(id, ctx), signal);
         signal?.throwIfAborted();
         if (active && active.id !== "pi:default" && active.authKind !== "oauth") {
-          // A selected model owns this alias. For a general Grok report, a
+          // A selected model owns this alias. For a general subscription report, a
           // different alias may still have a subscription login.
-          if (codex || ctx.model?.provider === id) return null;
+          if (ctx.model?.provider === id) return null;
           continue;
         }
         const resolved = await awaitWithAbort(
@@ -135,7 +140,7 @@ export async function resolveSubscriptionCredential(
             resolved.email,
           );
           if (!result) throw new Error("Invalid pooled credential");
-          return codex ? result : { ...result, providerId: id };
+          return { ...result, providerId: id };
         }
         if (active && active.id !== "pi:default") throw new Error("Missing pooled credential");
       } catch {
@@ -149,13 +154,14 @@ export async function resolveSubscriptionCredential(
     // A pooled credential already resolved above needs no synchronous read of
     // auth.json. Reuse one snapshot only if local fallback is necessary.
     const entry = object((stored ??= readJson(join(piAgentDir(env), "auth.json")))[id]);
-    // xAI API keys do not represent a SuperGrok subscription.
-    let usesOAuth = codex || entry.type === "oauth";
+    // Native OpenAI also accepts API keys; only OAuth represents subscription quota.
+    let usesOAuth = (codex && id === "openai-codex") || entry.type === "oauth";
     let runtimeOAuth: boolean | undefined;
     const selectedGrok = selectedGrokProvider === id;
+    const selectedNativeOpenAI = selectedOpenAIProvider === "openai" && id === "openai";
     try {
-      if (!codex) {
-        if (selectedGrok && ctx.model && registry.isUsingOAuth) {
+      if (!codex || id === "openai") {
+        if ((selectedGrok || selectedNativeOpenAI) && ctx.model && registry.isUsingOAuth) {
           runtimeOAuth = registry.isUsingOAuth(ctx.model);
           usesOAuth = runtimeOAuth;
         }
@@ -172,14 +178,18 @@ export async function resolveSubscriptionCredential(
         signal?.throwIfAborted();
         if (token) {
           const result = credential(token, "pi", "pi", codex);
-          if (result) return codex ? result : { ...result, providerId: id };
+          if (result) return { ...result, providerId: id };
         }
       }
     } catch {
       signal?.throwIfAborted();
       /* Local OAuth fallback below; never execute auth.json shell values. */
     }
-    if (selectedGrok && (runtimeOAuth === false || entry.type === "api_key")) return null;
+    if (
+      (selectedGrok || selectedNativeOpenAI) &&
+      (runtimeOAuth === false || entry.type === "api_key")
+    )
+      return null;
     if (entry.type === "oauth" && !expired(entry.expires, Date.now())) {
       const token = text(entry.access);
       if (token) {
@@ -190,7 +200,7 @@ export async function resolveSubscriptionCredential(
           codex,
           text(entry.accountId) ?? text(entry.account_id),
         );
-        if (result) return codex ? result : { ...result, providerId: id };
+        if (result) return { ...result, providerId: id };
       }
     }
     // A configured selected OAuth login must not silently use a different

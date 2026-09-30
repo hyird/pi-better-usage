@@ -13,6 +13,7 @@ import { type CredentialResolver, type UsageCredential } from "./src/credential.
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { PROVIDER_ID, STATUS_KEY } from "./src/identity.ts";
 import { USAGE_PROVIDERS, type UsageProvider } from "./src/providers.ts";
+import { OPENAI_PROVIDERS } from "./src/subscription-auth.ts";
 import {
   isMultiproviderService,
   MULTIPROVIDER_SERVICE_EVENT,
@@ -635,7 +636,7 @@ export function registerUsage(pi: ExtensionAPI, options: RegisterOptions = {}): 
   };
   const now = options.now ?? (() => Date.now());
   const bucketFor = (ctx: ExtensionContext) =>
-    ctx.model?.provider === "openai-codex" && ctx.model.id === "gpt-5.3-codex-spark"
+    OPENAI_PROVIDERS.includes(ctx.model?.provider ?? "") && ctx.model?.id === "gpt-5.3-codex-spark"
       ? "spark"
       : "default";
   let reportBucket = "default";

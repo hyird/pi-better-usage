@@ -23,6 +23,59 @@ function setup(provider = "openai-codex", stored: unknown = {}) {
   return { ctx, env };
 }
 describe("OAuth credential selection", () => {
+  it("resolves native ChatGPT OAuth with Pi's registry and keeps the selected provider", async () => {
+    const { ctx, env } = setup("openai");
+    Object.assign(ctx.modelRegistry, { isUsingOAuth: vi.fn(() => true) });
+    vi.mocked(ctx.modelRegistry.getProviderAuth).mockResolvedValue({
+      auth: { apiKey: jwt("native-account") },
+    } as never);
+    expect(await resolveSubscriptionCredential("openai", ctx, { env })).toMatchObject({
+      providerId: "openai",
+      accountId: "native-account",
+      source: "pi",
+    });
+    expect(ctx.modelRegistry.getProviderAuth).toHaveBeenCalledWith("openai");
+    expect(ctx.modelRegistry.getProviderAuth).not.toHaveBeenCalledWith("openai-codex");
+  });
+  it("does not show a stored subscription when native OpenAI selects an API key", async () => {
+    const { ctx, env } = setup("openai", {
+      openai: { type: "oauth", access: jwt("stale-native"), expires: Date.now() + 3_600_000 },
+      "openai-codex": {
+        type: "oauth",
+        access: jwt("other-legacy"),
+        expires: Date.now() + 3_600_000,
+      },
+    });
+    Object.assign(ctx.modelRegistry, { isUsingOAuth: vi.fn(() => false) });
+    expect(await resolveSubscriptionCredential("openai", ctx, { env })).toBeNull();
+    expect(ctx.modelRegistry.getProviderAuth).not.toHaveBeenCalled();
+  });
+  it("does not borrow legacy quota when a selected native ChatGPT login is unavailable", async () => {
+    const { ctx, env } = setup("openai", {
+      "openai-codex": {
+        type: "oauth",
+        access: jwt("other-legacy"),
+        expires: Date.now() + 3_600_000,
+      },
+    });
+    expect(await resolveSubscriptionCredential("openai", ctx, { env })).toBeNull();
+    expect(ctx.modelRegistry.getProviderAuth).not.toHaveBeenCalledWith("openai-codex");
+  });
+  it("reports stored native ChatGPT OAuth and retains its account identity", async () => {
+    const { ctx, env } = setup("openai", {
+      openai: {
+        type: "oauth",
+        access: "opaque-native-token",
+        accountId: "native",
+        expires: Date.now() + 3_600_000,
+      },
+    });
+    expect(await resolveSubscriptionCredential("openai", ctx, { env })).toMatchObject({
+      providerId: "openai",
+      accountId: "native",
+      source: "authFile",
+    });
+  });
   it("extracts the account ID from Pi's refreshed Codex token", async () => {
     const { ctx, env } = setup();
     vi.mocked(ctx.modelRegistry.getProviderAuth).mockResolvedValue({
