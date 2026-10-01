@@ -208,16 +208,19 @@ it.each(["escape", "host failure"])("cancels its pending load after %s", async (
   expect(loadingSignal?.aborted).toBe(true);
 });
 
-it("keeps text output for RPC clients that cannot display a terminal panel", async () => {
-  const notify = vi.fn();
-  const custom = vi.fn();
-  await showUsagePanel(
-    { mode: "rpc", ui: { custom, notify } } as unknown as ExtensionContext,
-    async () => "usage report",
-  );
-  expect(custom).not.toHaveBeenCalled();
-  expect(notify).toHaveBeenCalledWith("usage report", "info");
-});
+it.each(["rpc", "json", "print"])(
+  "keeps text output in %s mode even when a UI capability is present",
+  async (mode) => {
+    const notify = vi.fn();
+    const custom = vi.fn();
+    await showUsagePanel(
+      { mode, hasUI: true, ui: { custom, notify } } as unknown as ExtensionContext,
+      async () => "usage report",
+    );
+    expect(custom).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith("usage report", "info");
+  },
+);
 
 it("reports load failures to RPC clients without rejecting the command", async () => {
   const notify = vi.fn();

@@ -56,7 +56,7 @@ function colorizeSegments(segments: readonly UsageSegment[], theme: Theme): stri
 
 /** Widgets and coloured components need a real terminal, not RPC or print mode. */
 function hasTerminalUI(ctx: ExtensionContext): boolean {
-  return ctx.mode === "tui" || (ctx.mode === undefined && ctx.hasUI);
+  return ctx.mode === "tui";
 }
 
 export function isOpencodeGoModel(ctx: Pick<ExtensionContext, "model">): boolean {

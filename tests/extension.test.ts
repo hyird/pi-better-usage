@@ -234,14 +234,18 @@ describe("widget placement", () => {
     expect(harness.lastWidget()).toBeUndefined();
   });
 
-  it("falls back to the status line outside the TUI", async () => {
-    const harness = makeHarness({ mode: "rpc" });
-    await settle(harness);
+  it.each(["rpc", "json", "print"])(
+    "uses text status in %s mode without terminal widgets",
+    async (mode) => {
+      const harness = makeHarness({ mode, hasUI: true });
+      await settle(harness);
 
-    expect(harness.lastStatus()).toBe(
-      "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 9/22 14:03",
-    );
-  });
+      expect(harness.widgets).toHaveLength(0);
+      expect(harness.lastStatus()).toBe(
+        "Usage: 5h 97% left · wk 99% left · mo 99% left · ↺ 2h3m - 9/22 14:03",
+      );
+    },
+  );
 });
 
 describe("model and session transitions", () => {

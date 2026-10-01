@@ -122,7 +122,7 @@ export async function showUsagePanel(
   load: (signal: AbortSignal) => Promise<string>,
 ): Promise<void> {
   const controller = new AbortController();
-  const terminal = ctx.mode === "tui" || (ctx.mode === undefined && ctx.hasUI);
+  const terminal = ctx.mode === "tui";
   if (!terminal) {
     let report: string;
     try {
