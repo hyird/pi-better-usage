@@ -31,6 +31,8 @@ export type UsageSnapshot = {
   capturedAt: number;
   accountEmail?: string;
   providerLabel?: string;
+  /** An authenticated login without a supported remaining-quota endpoint. */
+  quotaUnavailable?: string;
   windows: Partial<Record<WindowKey, UsageWindow>>;
 };
 
@@ -248,6 +250,15 @@ export function usageSegments(
   label?: string,
   now = Date.now(),
 ): UsageSegment[] {
+  if (snapshot.quotaUnavailable) {
+    const account = config.showAccountLabel && label ? sanitizeLabel(label) : undefined;
+    return [
+      {
+        text: `Usage: ChatGPT OAuth connected · quota unavailable${account ? ` · ${account}` : ""}`,
+        severity: "muted",
+      },
+    ];
+  }
   const segments: UsageSegment[] = [{ text: "Usage: ", severity: "muted" }];
   let shown = 0;
   for (const key of config.windows) {
@@ -300,6 +311,7 @@ export function formatDetail(
   const lines = [
     `${snapshot.providerLabel ?? "OpenCode Go"} usage${account ? ` — account: ${account}` : ""}`,
   ];
+  if (snapshot.quotaUnavailable) lines.push(snapshot.quotaUnavailable);
   for (const key of config.windows) {
     const window = snapshot.windows[key];
     if (!window) continue;

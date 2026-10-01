@@ -121,6 +121,48 @@ function harness(disabled = false, fetchOverride?: FetchLike) {
       eventListeners.get(ACCOUNTS_SERVICE_EVENT)?.forEach((fn) => fn(service)),
   };
 }
+it("switches between legacy quota and direct OAuth status without stale account data", async () => {
+  const h = harness();
+  h.emit("session_start");
+  await flush();
+  expect(h.fetchImpl).toHaveBeenCalledTimes(1);
+  const direct = `h.${Buffer.from(JSON.stringify({ aud: "https://api.openai.com/v1", scope: "chatgpt.tokens.use.direct" })).toString("base64url")}.s`;
+  const legacy = `h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test" } })).toString("base64url")}.s`;
+  writeFileSync(
+    join(h.ctx.cwd, "auth.json"),
+    JSON.stringify({
+      openai: {
+        type: "oauth",
+        access: direct,
+        expires: Date.now() + 3600000,
+        email: "native@example.com",
+      },
+      "openai-codex": { type: "oauth", access: legacy },
+    }),
+  );
+  Object.assign(h.ctx.modelRegistry, {
+    isUsingOAuth: () => true,
+    getProviderAuth: async (id: string) =>
+      id === "openai" ? { auth: { apiKey: direct } } : undefined,
+  });
+  h.ctx.model = { ...h.ctx.model!, provider: "openai", id: "gpt-6.1-sol" };
+  h.emit("model_select");
+  expect(h.widgets.get("pi-better-usage-openai")).toBeUndefined();
+  await flush();
+  expect(h.fetchImpl).toHaveBeenCalledTimes(1);
+  await h.commands.get("usage")!.handler("", h.ctx);
+  expect(h.panelReports.at(-1)).toContain("OpenAI ChatGPT");
+  expect(h.panelReports.at(-1)).toContain("native@example.com");
+  expect(h.panelReports.at(-1)).toContain("Settings → Usage");
+  expect(h.panelReports.at(-1)).not.toContain("No OpenAI");
+  h.ctx.model = { ...h.ctx.model!, provider: "openai-codex", id: "gpt-5.4" };
+  h.emit("model_select");
+  await flush();
+  await h.commands.get("usage")!.handler("", h.ctx);
+  expect(h.panelReports.at(-1)).toContain("OpenAI Codex");
+  expect(h.panelReports.at(-1)).toContain("75% left");
+  expect(h.panelReports.at(-1)).not.toContain("native@example.com");
+});
 it("registers only /usage and polls only the active provider", async () => {
   const h = harness();
   h.emit("session_start");

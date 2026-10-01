@@ -12,6 +12,8 @@ export type UsageCredentialSource = "multilogin" | "pi" | "authFile" | "env";
 export type UsageCredential = {
   apiKey: string;
   accountId?: string;
+  /** Direct ChatGPT token sharing uses public Responses, not Codex backend quota. */
+  openaiAuthMode?: "codex" | "direct";
   /** Provider alias that supplied this credential, when it was resolved across aliases. */
   providerId?: string;
   email?: string;

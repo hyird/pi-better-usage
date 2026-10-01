@@ -9,6 +9,7 @@ import {
   GROK_PROVIDERS,
   OPENAI_PROVIDERS,
   object,
+  isDirectOpenAIToken,
   resolveSubscriptionCredential,
 } from "./subscription-auth.ts";
 import { fetchUsage, type UsageSnapshot, type UsageWindow } from "./usage.ts";
@@ -219,6 +220,17 @@ export async function fetchOpenAIUsage(
   credential: UsageCredential,
   options: QueryOptions = {},
 ): Promise<UsageSnapshot> {
+  options.signal?.throwIfAborted();
+  if (credential.openaiAuthMode === "direct" || isDirectOpenAIToken(credential.apiKey)) {
+    return {
+      capturedAt: options.now ?? Date.now(),
+      providerLabel: "OpenAI ChatGPT",
+      accountEmail: credential.email,
+      windows: {},
+      quotaUnavailable:
+        "Signed in with ChatGPT (direct OAuth). Remaining subscription quota is not exposed by this flow; check ChatGPT Settings → Usage.",
+    };
+  }
   if (!credential.accountId)
     throw new UsageError(
       "auth",

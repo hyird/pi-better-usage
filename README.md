@@ -8,7 +8,7 @@ One `/usage` command brings OpenAI Codex, Grok, and OpenCode Go together in a si
 
 | Service                | Pi provider                    | Subscription windows                                                                   |
 | ---------------------- | ------------------------------ | -------------------------------------------------------------------------------------- |
-| ChatGPT / OpenAI Codex | `openai`, `openai-codex`       | Five-hour and weekly limits, including weekly-only plans and separate Spark quota      |
+| ChatGPT / OpenAI Codex | `openai`, `openai-codex`       | Legacy: five-hour/weekly limits and Spark quota; direct OAuth: connected status only   |
 | Grok / SuperGrok       | `xai`, `xai-oauth`, `xai-auth` | Current subscription period, including unified weekly usage and legacy monthly credits |
 | OpenCode Go            | `opencode-go`                  | Five-hour, weekly, and monthly limits                                                  |
 
@@ -22,7 +22,7 @@ pi install git:github.com/hyird/pi-better-usage
 
 Run `/reload` inside Pi, then `/usage`.
 
-Tested with Pi 0.99.2. Prefer native `/login openai` → **Sign in with ChatGPT**, as recommended by [Pi's provider documentation](https://github.com/earendil-works/pi/blob/v0.99.2/packages/coding-agent/docs/providers.md). The legacy `openai-codex` login remains supported. API-key sessions have no subscription quota; selecting `openai` never borrows a legacy provider's account. A subscription token must expose a ChatGPT account ID and be accepted by the usage endpoint; otherwise the reading is unavailable.
+Tested with Pi 0.99.2. Prefer native `/login openai` → **Sign in with ChatGPT**, as recommended by [Pi's provider documentation](https://github.com/earendil-works/pi/blob/v0.99.2/packages/coding-agent/docs/providers.md). The legacy `openai-codex` login remains supported. API-key sessions have no subscription quota; selecting `openai` never borrows a legacy provider's account. Both login protocols are recognized. Legacy Codex tokens expose a ChatGPT account ID and use the Codex quota endpoint. New direct ChatGPT OAuth tokens (`chatgpt.tokens.use.direct`) have opaque auth metadata: their connected status is shown without an account ID, but no remaining percentage is invented or fetched from the legacy backend. `/usage` directs these users to ChatGPT Settings → Usage; the footer shows `ChatGPT OAuth connected · quota unavailable`. Session token usage remains available in Pi's built-in `/session` display. With the updated pi-multiprovider, new direct logins retain verified ID-token emails for both the switch menu and usage reports.
 
 When [hyird/pi-multiprovider](https://github.com/hyird/pi-multiprovider) is installed, `/usage` reports **every saved account**, with its label and a `[Current]` marker based on Pi's `auth.json`. A current login missing from the saved pool appears separately as `Unmanaged [Current]`. Unsupported providers or failed accounts get their own message without hiding the other results. Background display shows the current account only; account switches immediately clear old quota and refresh its label and usage.
 

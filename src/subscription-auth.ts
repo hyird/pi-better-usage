@@ -36,6 +36,22 @@ export function accountIdFromToken(token: string): string | undefined {
     return undefined;
   }
 }
+export function isDirectOpenAIToken(token: string): boolean {
+  try {
+    if (token.length > 65536) return false;
+    const payload = object(
+      JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")),
+    );
+    const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    return (
+      audiences.includes("https://api.openai.com/v1") &&
+      typeof payload.scope === "string" &&
+      payload.scope.split(/\s+/).includes("chatgpt.tokens.use.direct")
+    );
+  } catch {
+    return false;
+  }
+}
 function credential(
   token: string,
   source: UsageCredential["source"],
@@ -45,6 +61,7 @@ function credential(
   savedEmail?: string,
 ): UsageCredential | null {
   let accountId = id;
+  let openaiAuthMode: UsageCredential["openaiAuthMode"];
   if (codex) {
     try {
       const value = object(JSON.parse(token));
@@ -53,12 +70,17 @@ function credential(
     } catch {
       /* Pi normally returns a plain bearer token. */
     }
-    accountId ??= accountIdFromToken(token);
-    if (!accountId) return null;
+    openaiAuthMode = isDirectOpenAIToken(token) ? "direct" : "codex";
+    if (openaiAuthMode === "direct") accountId = undefined;
+    else {
+      accountId ??= accountIdFromToken(token);
+      if (!accountId) return null;
+    }
   }
   return {
     apiKey: token,
     accountId,
+    ...(openaiAuthMode ? { openaiAuthMode } : {}),
     email: emailFromToken(token) ?? accountEmail(savedEmail),
     source,
     label,
@@ -177,7 +199,14 @@ export async function resolveSubscriptionCredential(
             : undefined);
         signal?.throwIfAborted();
         if (token) {
-          const result = credential(token, "pi", "pi", codex);
+          const result = credential(
+            token,
+            "pi",
+            "pi",
+            codex,
+            undefined,
+            entry.access === token ? text(entry.email) : undefined,
+          );
           if (result) return { ...result, providerId: id };
         }
       }
@@ -199,6 +228,7 @@ export async function resolveSubscriptionCredential(
           "auth.json",
           codex,
           text(entry.accountId) ?? text(entry.account_id),
+          text(entry.email),
         );
         if (result) return { ...result, providerId: id };
       }
