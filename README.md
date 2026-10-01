@@ -22,7 +22,7 @@ pi install git:github.com/hyird/pi-better-usage
 
 Run `/reload` inside Pi, then `/usage`.
 
-Tested with Pi 0.99.1. Prefer native `/login openai` → **Sign in with ChatGPT**, as recommended by [Pi's provider documentation](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/providers.md). The legacy `openai-codex` login remains supported. API-key sessions have no subscription quota; selecting `openai` never borrows a legacy provider's account. A subscription token must expose a ChatGPT account ID and be accepted by the usage endpoint; otherwise the reading is unavailable.
+Tested with Pi 0.99.2. Prefer native `/login openai` → **Sign in with ChatGPT**, as recommended by [Pi's provider documentation](https://github.com/earendil-works/pi/blob/v0.99.2/packages/coding-agent/docs/providers.md). The legacy `openai-codex` login remains supported. API-key sessions have no subscription quota; selecting `openai` never borrows a legacy provider's account. A subscription token must expose a ChatGPT account ID and be accepted by the usage endpoint; otherwise the reading is unavailable.
 
 When [hyird/pi-multiprovider](https://github.com/hyird/pi-multiprovider) is installed, `/usage` reports **every saved account**, with its label and a `[Current]` marker based on Pi's `auth.json`. A current login missing from the saved pool appears separately as `Unmanaged [Current]`. Unsupported providers or failed accounts get their own message without hiding the other results. Background display shows the current account only; account switches immediately clear old quota and refresh its label and usage.
 
@@ -152,7 +152,7 @@ Use kebab-case file names and keep tests in `tests/` as `<module>.test.ts`. Name
 
 `src/http.ts` owns HTTP timeouts, retries, response limits and transport errors. Provider parsing and usage display remain in their domain modules.
 
-Host-provided Pi modules remain wildcard peer dependencies, with exact 0.99.1 development dependencies, following [Pi's package contract](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/packages.md#declare-dependencies). Authentication goes through Pi's public model registry and the companion account service; provider streams are left to Pi.
+Host-provided Pi modules remain wildcard peer dependencies, with exact 0.99.2 development dependencies, following [Pi's package contract](https://github.com/earendil-works/pi/blob/v0.99.2/packages/coding-agent/docs/packages.md#declare-dependencies). Authentication goes through Pi's public model registry and the companion account service; provider streams are left to Pi.
 
 OpenAI and Grok usage queries rely on private service endpoints, which may change. The extension only reads identity and usage data; it does not send model requests or modify subscription limits.
 
